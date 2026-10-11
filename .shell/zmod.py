@@ -31,7 +31,7 @@ class zmod:
         self.gcode.register_command('SAVE_SHAPER', self.cmd_SAVE_SHAPER)
         self.gcode.register_command('ZEXCLUDE', self.cmd_ZEXCLUDE)
         self.gcode.register_command('LOAD_ZOFFSET_NATIVE', self.cmd_LOAD_ZOFFSET_NATIVE)
-        self.gcode.register_command('SDCARD_PRINT_FILE_3MF', self.cmd_SDCARD_PRINT_FILE_3MF)
+        self.gcode.register_command('SDCARD_PRINT_FILE_MF', self.cmd_SDCARD_PRINT_FILE_MF)
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -39,7 +39,7 @@ class zmod:
         self.virtual_sdcard = self.printer.lookup_object('virtual_sdcard')
         self.sdcard_dirname = self.virtual_sdcard.sdcard_dirname
 
-    def cmd_SDCARD_PRINT_FILE_3MF(self, gcmd):
+    def cmd_SDCARD_PRINT_FILE_MF(self, gcmd):
         filename = gcmd.get("FILENAME", None)
         if not filename:
             gcmd.respond_raw("SDCARD_PRINT_FILE_3MF: FILENAME is required (no file loaded)")
