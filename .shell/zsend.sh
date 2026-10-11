@@ -49,7 +49,7 @@ send_data()
 
 if [ $# -eq 2 ]; then
     case "$2" in
-        *"3mf_print/"*)
+        *".3mf")
             send_data "$1" "$2"
             exit 0
             ;;
