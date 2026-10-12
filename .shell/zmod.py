@@ -145,9 +145,7 @@ class zmod:
                     gcmd.respond_raw(f"ZEXCLUDE_MF: Configuration file '{config_file}' not found inside 3MF")
                     return
 
-                raw_bytes = zip_ref.read(config_file)
-                raw_content = raw_bytes.decode('utf-8-sig', errors='ignore').strip()
-
+                raw_content = zip_ref.read(config_file).decode('utf-8', errors='ignore')
                 data = json.loads(raw_content)
 
                 bbox_all = data.get("bbox_all", None)
