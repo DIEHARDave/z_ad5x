@@ -582,6 +582,7 @@ class zmod_color:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.color_limit = 4
+        self.file_colors = []
 
         self.display = config.getboolean('display', True)
         self.lang = 'en'
