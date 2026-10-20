@@ -3,6 +3,7 @@ import json
 import os
 import serial
 import re
+import select
 import time
 import threading
 import logging
@@ -1190,16 +1191,22 @@ class zmod_ifs:
             self.gcode.run_script_from_command(f"TEMPERATURE_WAIT SENSOR=extruder MINIMUM={config['temp']-2} MAXIMUM={config['temp']+4}")
         self.gcode.run_script_from_command(f"IFS_REMOVE_PRUTOK PRUTOK={prutok} FORCE=0 NEED_TRASH={need_trash}")
 
-    def _ifs_serial_read(self, ser, begin_timeout=HOST_REPORT_TIME, data_timeout=DATA_TIMEOUT):
-        cutoff_time = time.monotonic() + begin_timeout
+    def _ifs_serial_read(self, ser, begin_timeout=HOST_REPORT_TIME, data_timeout=DATA_TIMEOUT * 2):
+        poller = select.poll()
+        poller.register(ser.fileno(), select.POLLIN)
         result = b''
+        timeout = begin_timeout
         while True:
-            if ser.in_waiting > 0:
-                cutoff_time = time.monotonic() + data_timeout
-                result += ser.read_all()
-            if time.monotonic() >= cutoff_time:
+            events = poller.poll(int(timeout * 1000))
+            if not events:
                 break
-            time.sleep(data_timeout)
+            for _, ev in events:
+                if ev & (select.POLLERR | select.POLLHUP | select.POLLNVAL) and not ev & select.POLLIN:
+                    raise serial.SerialException("IFS: port error/hangup")
+            data = ser.read(ser.in_waiting or 1)
+            if data:
+                result += data
+                timeout = data_timeout
 
         return result
 
