@@ -175,7 +175,7 @@ class zmod:
                 exclude_cmd = (
                     f"_SET_FAST_KAMP "
                     f"X_START={x_min:.4f} Y_START={y_min:.4f} "
-                    f"X_END={x_max:.4f} Y_END={y_max:.4f}"
+                    f"X_END={x_max:.4f} Y_END={y_max:.4f} "
                     "FROM=ZEXCLUDE_MF"
                 )
 
