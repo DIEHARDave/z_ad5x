@@ -29,6 +29,10 @@
       "C5PRO"
     ]
   },
+  "nopoop": {
+    "url": "https://github.com/ghzserg/nopoop.git", "branch": "master",
+    "printers": ["AD5X"]
+  },
     "quickswap": {
     "url": "https://github.com/ninjamida/quickswap-5x.git", "branch": "master",
     "printers": ["AD5X"]
