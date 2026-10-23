@@ -295,7 +295,7 @@ sqlite3 /opt/config/mod_data/database/moonraker-sql.db "DELETE FROM namespace_st
 
 # Создаем каталоги под плагины
 update_plugins /opt/config/moonraker.conf
-grep -q "extra_plugins.moonraker.conf" ${MOD_CONF}/mod_data/extra_plugins.moonraker.conf && update_plugins /usr/data/zmod/zmod/extra_plugins.moonraker.conf
+update_plugins /opt/config/mod_data/extra_plugins.moonraker.conf
 update_plugins /opt/config/mod_data/user.moonraker.conf
 
 if ! [ -f /usr/data/zmod/klipper/klippy/klippy.py ]; then
