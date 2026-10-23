@@ -293,6 +293,13 @@ fi
 # Очищаем данные о старых обновлениях
 sqlite3 /opt/config/mod_data/database/moonraker-sql.db "DELETE FROM namespace_store WHERE namespace = 'update_manager';"
 
+if [ -f /opt/config/mod_data/rem.conf ]; then
+    cat /opt/config/mod_data/rem.conf | while read a; 
+        do
+            [ -d "$a" ] && rm -rf "$a"
+        done
+fi
+
 # Создаем каталоги под плагины
 update_plugins /opt/config/moonraker.conf
 update_plugins /opt/config/mod_data/extra_plugins.moonraker.conf

@@ -233,7 +233,7 @@ def btn(label, cmd, color):
 
 def menu(printer, override=None):
     override = override or {}
-    out = [f"action:prompt_begin Плагины ({printer})"]
+    out = [f"action:prompt_begin Plugins ({printer})"]
     for name, p in my_plugins(printer).items():
         act = override.get(name, is_active(name, p))
         st = sec_state(name)
@@ -304,7 +304,6 @@ def toggle_updates(printer, name):
         return
     set_sec(name, p, "off" if sec_state(name) == "on" else "on")
     menu(printer)
-
 
 def apply(printer):
     api("POST", "/server/restart")
