@@ -213,7 +213,8 @@ def set_sec(name, p, mode):
                 lines.pop()
             lines += ([""] if lines else []) + new_block(name, p)
     elif mode == "off" and act:
-        mark_remove(path)
+        if not is_active(name, p):
+            mark_remove(path)        # обновления выключены и плагин не активен - каталог на удаление
         i, j = act
         for k in range(i, j):
             if lines[k].strip():
@@ -262,12 +263,15 @@ def toggle(printer, name):
     new_state = None
     try:
         if is_active(name, p):
+            if sec_state(name) != "on":
+                mark_remove(path)        # обновления выключены, плагин отключается - каталог на удаление
             if not web:
                 final = lambda: zmod_set(name, False)
             elif p.get("var"):
                 setvar, new_state = (p["var"], 0), False
             text = f"{name}: Disabled"
-        else:
+        else
+            unmark_remove(path)          # плагин включается - каталог не удалять
             if web:
                 if not os.path.isdir(path):
                     say(f"Download {name}...")
