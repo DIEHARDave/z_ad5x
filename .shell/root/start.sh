@@ -298,6 +298,7 @@ if [ -f /opt/config/mod_data/rem.conf ]; then
         do
             [ -d "$a" ] && rm -rf "$a"
         done
+    rm -f /opt/config/mod_data/rem.conf
 fi
 
 # Создаем каталоги под плагины
