@@ -5,7 +5,6 @@ import urllib.request, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATALOG = os.path.join(HERE, "plugins.json")
-BACKUP = os.path.join(HERE, "backup")
 
 MOD_CONF = "/root/printer_data/config"
 MOD_DATA = MOD_CONF + "/mod_data"
@@ -104,31 +103,10 @@ def is_active(name, p):
 def zmod_set(name, enable):
     gcode(f"{'ENABLE' if enable else 'DISABLE'}_PLUGIN name={name}")
 
-def backup_files(name, p):
-    files = ["release_info.json"] if p.get("type") == "web" else []
-    if p.get("persistent_files"):
-        files.append(p["persistent_files"])
-    for f in files:
-        src = os.path.join(path_of(name, p), f)
-        if os.path.isfile(src):
-            dst = os.path.join(BACKUP, name, f)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-
-def restore_files(name, p):
-    pf = p.get("persistent_files")
-    src = os.path.join(BACKUP, name, pf) if pf else None
-    if src and os.path.isfile(src):
-        dst = os.path.join(path_of(name, p), pf)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copy2(src, dst)
-
 def asset_name(name, p):
-    for f in (os.path.join(path_of(name, p), "release_info.json"),
-              os.path.join(BACKUP, name, "release_info.json")):
-        a = jload(f, {}).get("asset_name")
-        if a:
-            return a
+    a = jload(os.path.join(path_of(name, p), "release_info.json"), {}).get("asset_name")
+    if a:
+        return a
     raise RuntimeError("Not release_info.json with asset_name")
 
 def web_install(name, p):
@@ -221,7 +199,9 @@ def set_sec(name, p, mode):
     lines = conf_lines()
     act = find_block(lines, name, False)
     com = find_block(lines, name, True)
+    path = path_of(name, p)
     if mode == "on":
+        unmark_remove(path)
         if act:
             return
         if com:
@@ -233,6 +213,7 @@ def set_sec(name, p, mode):
                 lines.pop()
             lines += ([""] if lines else []) + new_block(name, p)
     elif mode == "off" and act:
+        mark_remove(path)
         i, j = act
         for k in range(i, j):
             if lines[k].strip():
@@ -281,21 +262,16 @@ def toggle(printer, name):
     new_state = None
     try:
         if is_active(name, p):
-            backup_files(name, p)
-            mark_remove(path)
-            set_sec(name, p, "remove")      # каталога скоро не будет - Moonraker не должен на него ссылаться
             if not web:
                 final = lambda: zmod_set(name, False)
             elif p.get("var"):
                 setvar, new_state = (p["var"], 0), False
             text = f"{name}: Disabled"
         else:
-            unmark_remove(path)
             if web:
                 if not os.path.isdir(path):
                     say(f"Download {name}...")
                     web_install(name, p)
-                    restore_files(name, p)
                     sh(p.get("start_cmd"))
                 if p.get("var"):
                     setvar, new_state = (p["var"], 1), True
