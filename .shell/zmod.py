@@ -178,8 +178,6 @@ class zmod:
                     f"X_END={x_max:.4f} Y_END={y_max:.4f} "
                     "FROM=ZEXCLUDE_MF"
                 )
-
-                gcmd.respond_raw(f"ZEXCLUDE_MF: Defining SET_FAST_MAP from 3MF metadata")
                 self.gcode.run_script_from_command(exclude_cmd)
 
         except FileNotFoundError:
@@ -204,7 +202,7 @@ class zmod:
         if not config_path:
             raise gcmd.error(f"LOAD_ZOFFSET_NATIVE: File not found {FFCONFIG1}, {FFCONFIG2}")
 
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
             data = json.load(f)
 
         try:
@@ -261,7 +259,7 @@ class zmod:
         layer_state = 0 if scan_first else 2
 
         try:
-            with open(full_path, 'r') as f:
+            with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                 gcmd.respond_raw(f"ZEXCLUDE: {full_path}")
 
                 max_lines = 3000
