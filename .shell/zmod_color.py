@@ -14,6 +14,7 @@ import subprocess
 FFCONFIG='/usr/prog/config/Adventurer5M.json'
 FILE_CONFIG='/usr/data/config/mod_data/file.json'
 THROTTLE_LINES = 32     # в циклах по строкам файла проверять время (zmod._throttle) раз в N строк
+SKIP_LINE_FIRST_CHARS = frozenset('GMXYZEFgmxyzef')
 
 TRANSLATIONS = {
     'ru': {
@@ -1054,6 +1055,9 @@ class zmod_color:
                 lines += 1
                 if lines % THROTTLE_LINES == 0:
                     self.zmod._throttle()
+
+                if line_raw[:1] in SKIP_LINE_FIRST_CHARS:
+                    continue
 
                 line = line_raw.strip().casefold()
                 if len(line) == 0:
