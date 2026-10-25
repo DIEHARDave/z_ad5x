@@ -13,6 +13,7 @@ import subprocess
 
 FFCONFIG='/usr/prog/config/Adventurer5M.json'
 FILE_CONFIG='/usr/data/config/mod_data/file.json'
+THROTTLE_LINES = 32     # в циклах по строкам файла проверять время (zmod._throttle) раз в N строк
 
 TRANSLATIONS = {
     'ru': {
@@ -59,7 +60,8 @@ TRANSLATIONS = {
         'spool': "Катушка",
         'unload_error': "Ошибка выгрузки: {}",
         'unload_success': "Выгрузка начата",
-        'unload': "Выгрузить"
+        'unload': "Выгрузить",
+        'plate': "Плата {}/{}"
     },
     'en': {
         'auto_assign_no_color_match': "Auto-assignment: Couldn't match color for {}",
@@ -105,7 +107,8 @@ TRANSLATIONS = {
         'spool': "in spool",
         'unload_error': "Unloading error: {}",
         'unload_success': "Unloading started",
-        'unload': "Unload"
+        'unload': "Unload",
+        'plate': "Plate {}/{}"
     },
     'de': {
         'auto_assign_no_color_match': "Autozuweisung: Farbe für {} nicht gefunden",
@@ -151,7 +154,8 @@ TRANSLATIONS = {
         'spool': "in Spule",
         'unload_error': "Fehler beim Entladen: {}",
         'unload_success': "Entladen gestartet",
-        'unload': "Entladen"
+        'unload': "Entladen",
+        'plate': "Platte {}/{}"
     },
     'fr': {
         'auto_assign_no_color_match': "Assignation auto : Impossible de faire correspondre la couleur pour {}",
@@ -197,7 +201,8 @@ TRANSLATIONS = {
         'spool': "dans la bobine",
         'unload_error': "Erreur de déchargement : {}",
         'unload_success': "Déchargement commencé",
-        'unload': "Décharger"
+        'unload': "Décharger",
+        'plate': "Plaque {}/{}"
     },
     'it': {
         'auto_assign_no_color_match': "Assegnazione auto: Impossibile abbinare il colore per {}",
@@ -243,7 +248,8 @@ TRANSLATIONS = {
         'spool': "nella bobina",
         'unload_error': "Errore di scaricamento: {}",
         'unload_success': "Scaricamento avviato",
-        'unload': "Scarica"
+        'unload': "Scarica",
+        'plate': "Piatto {}/{}"
     },
     'es': {
         'auto_assign_no_color_match': "Asignación auto: No se pudo encontrar el color para {}",
@@ -289,7 +295,8 @@ TRANSLATIONS = {
         'spool': "en el carrete",
         'unload_error': "Error de descarga: {}",
         'unload_success': "Descarga iniciada",
-        'unload': "Descargar"
+        'unload': "Descargar",
+        'plate': "Placa {}/{}"
     },
     'zh': {
         'auto_assign_no_color_match': "自动分配：无法匹配颜色 {}",
@@ -335,7 +342,8 @@ TRANSLATIONS = {
         'spool': "在线轴中",
         'unload_error': "卸载错误：{}",
         'unload_success': "开始卸载",
-        'unload': "卸载"
+        'unload': "卸载",
+        'plate': "盘 {}/{}"
     },
     'ja': {
         'auto_assign_no_color_match': "自動割当：{}の色が一致しません",
@@ -381,7 +389,8 @@ TRANSLATIONS = {
         'spool': "スプール内",
         'unload_error': "排出エラー：{}",
         'unload_success': "排出を開始",
-        'unload': "排出する"
+        'unload': "排出する",
+        'plate': "プレート {}/{}"
     },
     'ko': {
         'auto_assign_no_color_match': "자동 할당: {}에 대한 색상을 찾을 수 없습니다",
@@ -427,7 +436,8 @@ TRANSLATIONS = {
         'spool': "스풀 내",
         'unload_error': "언로드 오류: {}",
         'unload_success': "언로드 시작",
-        'unload': "언로드"
+        'unload': "언로드",
+        'plate': "플레이트 {}/{}"
     },
     'pt': {
         'auto_assign_no_color_match': "Atribuição auto: Não foi possível corresponder a cor para {}",
@@ -473,7 +483,8 @@ TRANSLATIONS = {
         'spool': "na bobina",
         'unload_error': "Erro ao descarregar: {}",
         'unload_success': "Descarga iniciada",
-        'unload': "Descarregar"
+        'unload': "Descarregar",
+        'plate': "Placa {}/{}"
     },
     "cs": {
         'auto_assign_no_color_match': "Auto-přiřazení: Nepodařilo se shodovat barvu pro {}",
@@ -519,7 +530,8 @@ TRANSLATIONS = {
         "spool": "Cívka",
         "unload_error": "Chyba vyndávání: {}",
         "unload_success": "Vyndávání spuštěno",
-        "unload": "Vyndat"
+        "unload": "Vyndat",
+        'plate': "Deska {}/{}"
     },
     'tr': {
         'auto_assign_no_color_match': "Otomatik atama: {} için renk eşleşmedi",
@@ -565,7 +577,8 @@ TRANSLATIONS = {
         'spool': "makara",
         'unload_error': "Boşaltma hatası: {}",
         'unload_success': "Boşaltma başlatıldı",
-        'unload': "Boşalt"
+        'unload': "Boşalt",
+        'plate': "Plaka {}/{}"
     }
 }
 
@@ -583,6 +596,7 @@ class zmod_color:
         self.printer = config.get_printer()
         self.color_limit = 4
         self.file_colors = []
+        self.file_plates = [1]      # Нарезанные платы 3mf; для обычного gcode [1]
 
         self.display = config.getboolean('display', True)
         self.lang = 'en'
@@ -992,47 +1006,10 @@ class zmod_color:
         """Перцептуальное расстояние ΔE76"""
         return ((l1 - l2) ** 2 + (a1 - a2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
-    def _parse_3mf_filament(self, file_path):
-        """Парсит 3MF архив и извлекает данные о филаментах из метаданных Orca/Bambu Slicer."""
-        from zipfile import ZipFile
-        import xml.etree.ElementTree as ET
-
-        sorted_colors = []
-        try:
-            with ZipFile(file_path, "r") as zip_ref:
-                file_list = zip_ref.namelist()
-
-                # Ищем файлы конфигурации плиты (OrcaSlicer/BambuStudio)
-                plate_cfgs = [f for f in file_list if f.startswith('Metadata/plate_') and f.endswith('.config')]
-                if not plate_cfgs and 'Metadata/slice_info.config' in file_list:
-                    plate_cfgs = ['Metadata/slice_info.config']
-
-                if plate_cfgs:
-                    # Читаем первый найденный файл плиты
-                    xml_data = zip_ref.read(plate_cfgs[0])
-                    root = ET.fromstring(xml_data)
-
-                    # Извлекаем элементы <filament>
-                    for fil in root.findall(".//filament"):
-                        fil_id_str = fil.attrib.get("id")
-                        if fil_id_str:
-                            # 3MF использует 1-based ID (1, 2...), переводим в 0-based для экструдеров (T0, T1...)
-                            tool_idx = int(fil_id_str) - 1
-                            color = fil.attrib.get("color", "").strip()
-                            mat_type = fil.attrib.get("type", "").strip()
-                            sorted_colors.append((tool_idx, color, mat_type))
-
-                    if sorted_colors:
-                        sorted_colors.sort(key=lambda entry: entry[0])
-                        return sorted_colors
-        except Exception:
-            pass
-
-        return None
-
-    def get_used_colors(self, gcmd):
-        # Return (Success_bool, list_of_tuples)
+    def get_used_colors(self, gcmd, plate=1):
+        # Return (Success_bool, list_of_tuples, plates)
         # list_of_tuples: (tool ID, color, material)
+        # plates: нарезанные платы 3mf ([1] для обычного gcode)
 
         save_variables = self.printer.lookup_object('save_variables', None)
         save_variables = {} if save_variables == None else save_variables.allVariables
@@ -1040,23 +1017,24 @@ class zmod_color:
         scan_files_setting = save_variables.get('scan_file_colors', 0)
 
         fname = gcmd.get('FILENAME', '')
+        plates = [1]
 
         auto_assign = gcmd.get_int('AUTO_ASSIGN', 0)
         if auto_assign == 1:
             scan_files_setting = 1
 
         if fname.lower().endswith('.3mf'):
-            full_path = f"/usr/data/gcodes/{fname}"
-            sorted_colors = self._parse_3mf_filament(full_path)
+            plates = self.zmod.get_plates(fname) or [plate]
+            sorted_colors = self.zmod.get_colors(fname, plate, gcmd)
 
             if sorted_colors:
-                return (True, sorted_colors)
+                return (True, sorted_colors, plates)
 
             scan_files_setting = 0
 
         if scan_files_setting == 0:
             tool_count = self.get_allowed_tool_count(gcmd)
-            return (False, [(i, '', '') for i in range(tool_count)])
+            return (False, [(i, '', '') for i in range(tool_count)], plates)
 
         if fname == '':
             raise gcmd.error(self._t('error_no_filename'))
@@ -1070,7 +1048,13 @@ class zmod_color:
         found_data = False
 
         with open(f"/usr/data/gcodes/{fname}", 'r') as f:
+            lines = 0
+            self.zmod._throttle_reset()
             for line_raw in f:
+                lines += 1
+                if lines % THROTTLE_LINES == 0:
+                    self.zmod._throttle()
+
                 line = line_raw.strip().casefold()
                 if len(line) == 0:
                     continue
@@ -1098,7 +1082,7 @@ class zmod_color:
                     if line.startswith('; header_block_end'):
                         if scan_files_setting == 2:
                             tool_count = self.get_allowed_tool_count(gcmd)
-                            return (found_data, [(i, '', '') for i in range(tool_count)])
+                            return (found_data, [(i, '', '') for i in range(tool_count)], plates)
                         else:
                             gcmd.respond_raw(f"// {self._t('no_prepared_data_scanning')}")
 
@@ -1132,7 +1116,7 @@ class zmod_color:
         if len(result_colors) == 1 and result_colors[0] == 0 and filament_colors[0] == '' and filament_types[0] == '':
             found_data = False
 
-        return (found_data, sorted_colors)
+        return (found_data, sorted_colors, plates)
 
     def get_auto_tool_assignments(self, gcmd, orig_tools, raw_slots, output_text, one_based_indexes):
         if len(raw_slots) == 0:
@@ -1261,9 +1245,12 @@ class zmod_color:
         if leveling not in (0, 1):
             raise gcmd.error(self._t('error_leveling', leveling))
 
+        # Плата: если не передана или не нарезана - zmod подставит нарезанную
+        plate = self.zmod.get_plate(gcmd, fname)
+
         auto_assign_setting = 0
         if gcmd.get_int('ALLOWED_TOOL_COUNT', 0) == 0:
-            colors_found, self.file_colors = self.get_used_colors(gcmd)
+            colors_found, self.file_colors, self.file_plates = self.get_used_colors(gcmd, plate)
             if self.display and any(file_color[0] > 3 for file_color in self.file_colors):
                 raise gcmd.error(self._t('error_native_screen_tool_count', len(self.file_colors)))
             if colors_found:
@@ -1325,14 +1312,28 @@ class zmod_color:
 
                 gcmd.respond_raw(f"// action:prompt_text {fname}|{prompt_text}")
 
+                # Кнопка платы (только если нарезано больше одной): листает нарезанные платы по кругу
+                if len(self.file_plates) > 1:
+                    cur_pos = self.file_plates.index(plate) if plate in self.file_plates else 0
+                    next_plate = self.file_plates[(cur_pos + 1) % len(self.file_plates)]
+                    plate_text = self._t('plate', plate, self.file_plates[-1])
+                    gcmd.respond_raw("// action:prompt_button_group_start")
+                    # ALLOWED_TOOL_COUNT=0 -> пересканировать цвета новой платы, T-привязки сбрасываются
+                    gcmd.respond_raw(
+                        f"// action:prompt_button {plate_text}|"
+                        f"SET_ZCOLOR SILENT={silent} FILENAME=\"{fname}\" PLATE={next_plate} "
+                        f"LEVELING={leveling} ALLOWED_TOOL_COUNT=0|primary"
+                    )
+                    gcmd.respond_raw("// action:prompt_button_group_end")
+
                 gcmd.respond_raw("// action:prompt_button_group_start")
                 color = "006400" if leveling == 1 else "808080"
-                gcmd.respond_raw(f"// action:prompt_button {leveling_text}|SET_ZCOLOR SILENT={silent} FILENAME=\"{fname}\" LEVELING={int(not leveling)} ALLOWED_TOOL_COUNT={allowed_tool_count} {current_tools_param_text}|{color}")
+                gcmd.respond_raw(f"// action:prompt_button {leveling_text}|SET_ZCOLOR SILENT={silent} FILENAME=\"{fname}\" PLATE={plate} LEVELING={int(not leveling)} ALLOWED_TOOL_COUNT={allowed_tool_count} {current_tools_param_text}|{color}")
                 color = "202020" if auto_assign == 0 else \
                         "EE0000" if (auto_result & AUTO_ASSIGN_ANY_SUCCESS) == 0 or (auto_result & (AUTO_ASSIGN_MATERIAL_FAILURE | AUTO_ASSIGN_COLOR_FAILURE)) != 0 else \
                         "AAAA00" if (auto_result & (AUTO_ASSIGN_COLOR_WEAK | AUTO_ASSIGN_DUPLICATE)) != 0 else \
                         "00DD00"
-                gcmd.respond_raw(f"// action:prompt_button {self._t('auto_select_colors')}|SET_ZCOLOR SILENT={silent} AUTO_ASSIGN=1 FILENAME=\"{fname}\" LEVELING={leveling} ALLOWED_TOOL_COUNT=0 {current_tools_param_text}|{color}")
+                gcmd.respond_raw(f"// action:prompt_button {self._t('auto_select_colors')}|SET_ZCOLOR SILENT={silent} AUTO_ASSIGN=1 FILENAME=\"{fname}\" PLATE={plate} LEVELING={leveling} ALLOWED_TOOL_COUNT=0 {current_tools_param_text}|{color}")
                 gcmd.respond_raw("// action:prompt_button_group_end")
 
                 # gcmd.respond_raw(f"// action:prompt_text {self._t('prompt_map_color')}")
@@ -1386,7 +1387,7 @@ class zmod_color:
                         color_name = slot_info['Color'].replace('_', '/', 1) if slot_info['Color'].startswith('_') else ''
                         tool_name = f"T{tool_idx}" if not one_based_indexes else str(tool_idx+1)
 
-                        params = f"LEVELING={leveling} FILENAME=\"{fname}\" ALLOWED_TOOL_COUNT={allowed_tool_count} {current_tools_param_text}"
+                        params = f"LEVELING={leveling} FILENAME=\"{fname}\" PLATE={plate} ALLOWED_TOOL_COUNT={allowed_tool_count} {current_tools_param_text}"
 
                         gcmd.respond_raw(
                             f"// action:prompt_button {tool_name}: {file_btn_text} ->|"
@@ -1407,7 +1408,7 @@ class zmod_color:
 
                 gcmd.respond_raw(
                     f"// action:prompt_footer_button {self._t('send_print')}|"
-                    f"PRINT_ZCOLOR LEVELING={leveling} FILENAME=\"{fname}\" ALLOWED_TOOL_COUNT={allowed_tool_count} "
+                    f"PRINT_ZCOLOR LEVELING={leveling} FILENAME=\"{fname}\" PLATE={plate} ALLOWED_TOOL_COUNT={allowed_tool_count} "
                     f"{current_tools_param_text}|red"
                 )
                 gcmd.respond_raw(f"// action:prompt_footer_button {self._t('cancel')}|RESPOND TYPE=command MSG=action:prompt_end")
@@ -1446,7 +1447,7 @@ class zmod_color:
                         )
 
                 new_gcmd_params = {
-                        'LEVELING': leveling, 'FILENAME': fname, 'ALLOWED_TOOL_COUNT': allowed_tool_count
+                        'LEVELING': leveling, 'FILENAME': fname, 'PLATE': plate, 'ALLOWED_TOOL_COUNT': allowed_tool_count
                         }
 
                 for i in range(len(tools)):
@@ -1484,9 +1485,12 @@ class zmod_color:
         pattern = re.compile(r'^T([1-9]?[0-9])')
 
         with open(f"{self.virtual_sd.sdcard_dirname}/{filename}", 'r', encoding='utf-8') as file:
+            self.zmod._throttle_reset()
             for i, line in enumerate(file):
                 if i > 3000:
                     break;
+                if i % THROTTLE_LINES == 0:
+                    self.zmod._throttle()
                 stripped_line = line.strip()
                 match = pattern.match(stripped_line)
                 if match:
@@ -1664,7 +1668,8 @@ class zmod_color:
             if ztool < 0 or ztool >= allowed_tool_count:
                 raise gcmd.error(self._t('error_tool', '', ztool))
 
-            params = f"FILENAME=\"{fname}\" LEVELING={leveling} ALLOWED_TOOL_COUNT={allowed_tool_count}"
+            plate = self.zmod.get_plate(gcmd, fname)
+            params = f"FILENAME=\"{fname}\" PLATE={plate} LEVELING={leveling} ALLOWED_TOOL_COUNT={allowed_tool_count}"
             for i in range(allowed_tool_count):
                 if i == ztool:
                     continue
