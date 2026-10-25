@@ -1234,7 +1234,6 @@ class zmod_color:
                                 break
         return result_flags
 
-
     def cmd_SET_ZCOLOR(self, gcmd):
         save_variables = self.printer.lookup_object('save_variables', None)
         save_variables = {} if save_variables == None else save_variables.allVariables
@@ -1251,7 +1250,6 @@ class zmod_color:
         if leveling not in (0, 1):
             raise gcmd.error(self._t('error_leveling', leveling))
 
-        # Плата: если не передана или не нарезана - zmod подставит нарезанную
         plate = self.zmod.get_plate(gcmd, fname)
 
         auto_assign_setting = 0
@@ -1316,7 +1314,7 @@ class zmod_color:
                             prompt_text = f"Extruder: {slot['ID']}: {slot['Material']}/{slot['Color']}"
                             break
 
-                gcmd.respond_raw(f"// action:prompt_text {fname}|{prompt_text}")
+                gcmd.respond_raw(f"// action:prompt_text {fname}[{plate}]|{prompt_text}")
 
                 # Кнопка платы (только если нарезано больше одной): листает нарезанные платы по кругу
                 if len(self.file_plates) > 1:
