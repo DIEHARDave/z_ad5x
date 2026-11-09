@@ -82,6 +82,9 @@ class afcIFS(afcUnit):
         self._head = None         # (слот в голове, опросов) пока не устоялось
         self._busy = False        # идёт наша команда IFS
         self._swap_from = None    # lane, чья выгрузка вошла в смену
+        self._await_empty = set() # lane после Eject: ждём, пока слот опустеет
+        self.prep_sample = config.getfloat('prep_sample', 8., minval=0.)  # сек опроса слотов на PREP
+        self._prep_seen = None    # (до, {слот: был ли пруток}) - выборка PREP
         self._synced = {}         # слот -> (тип, '#RRGGBB'), на которых сошлись обе стороны
         self._map_mtime = None
         self._map_agreed = None   # карта FILE_CONFIG, на которой сошлись с AFC
@@ -230,8 +233,21 @@ class afcIFS(afcUnit):
                 self._seen[lane.name] = now
                 self._set_presence(lane, now)
                 continue
+            if not now:
+                self._await_empty.discard(lane.name)
             if now == seen:
                 self._pending.pop(lane.name, None)
+                if (now and not lane.load_state and not lane.tool_loaded
+                        and lane.name not in self._await_empty
+                        and lane.status != AFCLaneState.EJECTING):
+                    # Пруток в слоте, а AFC считает lane пустой (после Eject вынули и вставили
+                    # быстрее empty_polls): вставка для AFC
+                    self.logger.info("AFC_IFS: %s has filament again" % lane.name)
+                    self._set_presence(lane, True)
+                    try:
+                        lane.handle_load_runout(eventtime, True)
+                    except Exception:
+                        self.logger.error("AFC_IFS: %s insert failed: %s" % (lane.name, traceback.format_exc()))
                 continue
             value, count = self._pending.get(lane.name, (now, 0))
             count = count + 1 if value == now else 1
@@ -399,8 +415,8 @@ class afcIFS(afcUnit):
             zmod = ('' if zm in ('', '?') else zm, color_hex(s.get('HEX')))
             afc = (lane.material or '', color_hex(lane.color))
             agreed = self._synced.get(slot)
-            if agreed is None or zmod != agreed:
-                # Первый взгляд (Zmod прав) или изменили в Zmod: меню цветов, NFC
+            if agreed is None or zmod != agreed or afc == ('', ''):
+                # Первый взгляд (Zmod прав), изменили в Zmod (меню цветов, NFC) или AFC стёр lane
                 if afc != zmod:
                     self._apply_zmod(lane, s)
                     changed = True
@@ -446,11 +462,12 @@ class afcIFS(afcUnit):
             self.reactor.pause(self.reactor.monotonic() + .5)
             st = self._status()
         succeeded = self._ifs_on(st)
+        sample = self._prep_presence() if succeeded else {}
         msg = ''
         if not succeeded:
             msg = '<span class=error--text>IFS OFF</span>'
         else:
-            present = self._present(st, cur_lane)
+            present = sample.get(self._slot[cur_lane.name], self._present(st, cur_lane))
             self._seen[cur_lane.name] = present
             self._set_presence(cur_lane, present)
             in_head = self._in_head(st) == self._slot[cur_lane.name]
@@ -491,6 +508,23 @@ class afcIFS(afcUnit):
             lane_name=cur_lane.name, tcmd=cur_lane.map_to_string(), msg=msg))
         cur_lane.set_afc_prep_done()
         return succeeded
+
+    def _prep_presence(self):
+        # IFS после старта на секунды показывает слоты пустыми: пустой на PREP стёр бы катушку.
+        # Один опрос на все lane PREP: слот с прутком хотя бы в одном чтении - с прутком
+        now = self.reactor.monotonic()
+        if self._prep_seen is not None and now < self._prep_seen[0]:
+            return self._prep_seen[1]
+        seen = {}
+        until = now + self.prep_sample
+        while True:
+            for slot, s in self._slots(self._status()).items():
+                seen[slot] = seen.get(slot, False) or bool(s.get('hasFilament'))
+            if self.reactor.monotonic() >= until:
+                break
+            self.reactor.pause(self.reactor.monotonic() + .5)
+        self._prep_seen = (self.reactor.monotonic() + 5., seen)
+        return seen
 
     # -- движения (всё командами Zmod) -------------------------------------------
 
@@ -585,6 +619,7 @@ class afcIFS(afcUnit):
         return True
 
     def eject_lane(self, lane):
+        self._await_empty.add(lane.name)
         # Пруток не в голове уже стоит в IFS: вынуть катушку рукой
         if self._in_head(self._status()) == self._slot[lane.name]:
             ok, err = self._run(self.unload_cmd, lane)
