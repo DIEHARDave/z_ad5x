@@ -73,6 +73,7 @@ class afcIFS(afcUnit):
             '_A_CHANGE_FILAMENT CHANNEL={tool} RESTORE_POSITION={restore} RESTORE_TEMP={restore}')
 
         self.color = None
+        self.zifs = None
         self.sdcard = None
         self.save_variables = None
         self._slot = {}           # lane -> слот IFS 1..16
@@ -125,6 +126,7 @@ class afcIFS(afcUnit):
     def handle_connect(self):
         super().handle_connect()
         self.color = self.printer.lookup_object('zmod_color')
+        self.zifs = self.printer.lookup_object('zmod_ifs', None)
         self.sdcard = self.printer.lookup_object('virtual_sdcard', None)
         self.save_variables = self.printer.lookup_object('save_variables', None)
         if not self.afc_heats:
@@ -166,6 +168,10 @@ class afcIFS(afcUnit):
         except Exception:
             self.logger.debug("AFC_IFS: zmod_color.get_status failed\n" + traceback.format_exc())
             return {}
+
+    def _ifs_on(self, st):
+        # Связь с IFS - у zmod_ifs (zmod_color.ifs появляется только после диалога цветов)
+        return bool(getattr(self.zifs, 'ifs', False)) if self.zifs is not None else bool(st.get('ifs'))
 
     @staticmethod
     def _slots(st):
@@ -210,7 +216,7 @@ class afcIFS(afcUnit):
         if self._busy or not self._prepped() or self.afc.current_state not in ('Idle', None):
             return eventtime + self.poll_interval
         st = self._status(eventtime)
-        if not st or not st.get('ifs'):
+        if not st or not self._ifs_on(st):
             return eventtime + self.poll_interval
         head = bool(st.get('extruder_sensor'))
         for lane in self.lanes.values():
@@ -418,7 +424,7 @@ class afcIFS(afcUnit):
         scripts = []
         for lane in self.lanes.values():
             sid = spool_id(v.get('afc_spool_lane%d' % self._slot[lane.name]))
-            if sid is not None and spool_id(lane.spool_id) is None:
+            if sid is not None and spool_id(lane.spool_id) is None and lane.prep_state:
                 self.logger.info("AFC_IFS: %s keeps spool %s from the built-in AFC" % (lane.name, sid))
                 scripts.append('SET_SPOOL_ID LANE=%s SPOOL_ID=%d' % (lane.name, sid))
         scripts.append('SAVE_VARIABLE VARIABLE=afc_full_seeded VALUE=1')
@@ -434,7 +440,12 @@ class afcIFS(afcUnit):
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         st = self._status()
-        succeeded = bool(st.get('ifs'))
+        # IFS отвечает через несколько секунд после старта: ждём до 30 с
+        until = self.reactor.monotonic() + 30.
+        while not self._ifs_on(st) and self.reactor.monotonic() < until:
+            self.reactor.pause(self.reactor.monotonic() + .5)
+            st = self._status()
+        succeeded = self._ifs_on(st)
         msg = ''
         if not succeeded:
             msg = '<span class=error--text>IFS OFF</span>'
