@@ -16,6 +16,34 @@ check_link()
     fi
 }
 
+# Полный AFC (ArmoredTurtle AFC-Klipper-Add-On, копия в /usr/data/zmod/zmod/AFC) вместо
+# встроенной эмуляции zmod_afc: afc = 2, только AD5X без родного экрана (печать ведёт Klipper)
+AFC_FULL_DIR=/usr/data/zmod/zmod/AFC/extras
+afc_full_enabled()
+{
+    [ ${AD5X} -eq 1 ] && grep -q "^afc = 2" ${MOD_CONF}/mod_data/variables.cfg && grep -q "^display_off = 1" ${MOD_CONF}/mod_data/variables.cfg
+}
+
+# Ссылки на модули AFC в klippy/extras ($1); при выключенном AFC - удалить
+afc_full_links()
+{
+    [ -d "$1" ] || return
+    if afc_full_enabled; then
+        for f in ${AFC_FULL_DIR}/*.py; do
+            check_link "$1/$(basename $f)" "$f"
+        done
+    else
+        afc_full_unlink "$1"
+    fi
+}
+
+afc_full_unlink()
+{
+    for f in "$1"/*.py; do
+        [ -L "$f" ] && case "$(readlink "$f")" in ${AFC_FULL_DIR}/*) rm -f "$f" ;; esac
+    done
+}
+
 enable_zmod_ad5m()
 {
     check_link /bin/dropbearkey /usr/data/zmod/zmod/.shell/eabi/dropbear
@@ -146,6 +174,7 @@ restore_base()
         rm -f ${KLIPPER_DIR}/klippy/extras/zmod_ifs.py
         rm -f ${KLIPPER_DIR}/klippy/extras/zmod_ifs_switch_sensor.py
         rm -f ${KLIPPER_DIR}/klippy/extras/zmod_ifs_motion_sensor.py
+        afc_full_unlink ${KLIPPER_DIR}/klippy/extras
     fi
     grep -q _output_callback_gcode ${KLIPPER_DIR}/klippy/webhooks.py && cp /usr/data/zmod/zmod/.shell/webhooks.py.orig ${KLIPPER_DIR}/klippy/webhooks.py
     grep -q ZLOAD_VARIABLE ${KLIPPER_DIR}/klippy/extras/save_variables.py && cp /usr/data/zmod/zmod/.shell/save_variables.py.orig ${KLIPPER_DIR}/klippy/extras/save_variables.py
@@ -573,6 +602,7 @@ unset LD_PRELOAD
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_ifs_switch_sensor.py /usr/data/zmod/zmod/.shell/zmod_ifs_switch_sensor.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_ifs_motion_sensor.py /usr/data/zmod/zmod/.shell/zmod_ifs_motion_sensor.py
         check_link /opt/config/rw /usr/prog/config/
+        afc_full_links ${KLIPPER_DIR}/klippy/extras
     fi
 
     check_link ${KLIPPER_DIR}/klippy/extras/zmod.py /usr/data/zmod/zmod/.shell/zmod.py

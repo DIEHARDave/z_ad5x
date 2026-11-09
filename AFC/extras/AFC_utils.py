@@ -1,0 +1,1173 @@
+# AFCProject Automated Filament Changer Software
+#
+# Copyright (C) 2024-2026 Armored Turtle
+# Copyright (C) 2026 AFCProject
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
+
+# File is used to hold common functions that can be called from anywhere and don't belong to a class
+from __future__ import annotations
+
+import traceback
+import json
+import inspect
+import re
+import threading
+import chelper
+
+from datetime import datetime
+from queue import Queue
+from urllib.request import (
+    Request,
+    urlopen
+)
+from urllib.parse import (
+    urlencode,
+    urljoin,
+    quote
+)
+
+from urllib.error import (
+    HTTPError
+)
+
+from typing import TYPE_CHECKING, Optional, Callable, List, Any, Union
+
+if TYPE_CHECKING:
+    from extras.AFC_logger import AFC_logger
+    from configfile import ConfigWrapper
+    from extras.filament_switch_sensor import SwitchSensor
+    from klippy import Printer
+    from query_endstops import QueryEndstops
+    from reactor import SelectReactor as Reactor
+    from gcode import GCodeCommand, GCodeDispatch
+    from extras.pause_resume import PauseResume
+    from extras.idle_timeout import IdleTimeout
+    from pins import PrinterPins
+
+ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
+
+_NATURAL_SORT_RE = re.compile(r'(\d+)')
+
+def natural_sort_key(value: str) -> list[Union[int, str]]:
+    """
+    Splits a string into digit/non-digit chunks so lists of e.g. T(n) macros
+    sort numerically (T2 before T10) rather than lexicographically (T10
+    before T2).
+
+    :param value: String to build a sort key for, e.g. "T10"
+    :return list: Chunks with digit runs converted to int for numeric ordering
+    """
+    return [int(chunk) if chunk.isdigit() else chunk.lower()
+            for chunk in _NATURAL_SORT_RE.split(value)]
+
+def add_filament_switch(switch_name: str, switch_pin: str, printer: Printer,
+                        show_sensor: bool=True, runout_callback: Optional[Callable[..., Any]] = None,
+                        enable_runout: bool=False, debounce_delay: float=0.
+                        ) -> tuple[SwitchSensor, DebounceButton]:
+    """
+    Helper function to register pins as filament switch sensor so it will show up in web guis
+
+    :param switch_name: Name of switch to register, should be in the following format: `filament_switch_sensor <name>`
+    :param switch_pin: Pin to add to config for switch
+    :param printer: printer object
+    :param show_sensor: Controls weather or not this sensor will show up in Fluidd/Mainsail UI,
+                        True to show sensor, False to hide sensor from showing up.
+    :param runout_callback: Pass in method to replace existing _runout_event_handler in klippers
+                            runout_helper class.
+    :param enable_runout: If True automatically turns off runout, user can always reenable from UI
+                          if sensor is showing or from klipper macro.
+    :param debounce_delay: A period of time in seconds to debounce switches prior to detecting
+                           runouts
+
+    :return tuple: filament_switch_sensor object and DebounceButton object
+    """
+    import configparser
+    import configfile
+    new_switch_name = f"filament_switch_sensor {switch_name}"
+    ppins: PrinterPins = printer.lookup_object('pins')
+    ppins.allow_multi_use_pin(switch_pin.strip("!^~"))
+    filament_switch_config = configparser.RawConfigParser()
+    filament_switch_config.add_section( new_switch_name )
+    filament_switch_config.set( new_switch_name, 'switch_pin', switch_pin)
+    filament_switch_config.set( new_switch_name, 'pause_on_runout', 'False')
+    filament_switch_config.set( new_switch_name, 'debounce_delay', str(0.0))
+
+    # Following needs to be added for Snapmaker U1 klipper version, does not hurt to always
+    # have here for non U1 klipper versions.
+    filament_switch_config.set( new_switch_name, "extruder")
+
+    cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, new_switch_name)
+
+    fila: SwitchSensor = printer.load_object(cfg_wrap, new_switch_name)
+
+    # Commence the hacky stuff for delayed runout
+    if not show_sensor:
+        # Removing normal switch name from object and adding name with underscore if user does not want
+        # sensor showing up in gui. Doing this suppressed the sensor from showing up in gui  since the
+        # name is not exactly "filament_switch_sensor"
+        printer.objects["_" + new_switch_name] = printer.objects.pop(new_switch_name)
+
+    fila.runout_helper.sensor_enabled = enable_runout
+    fila.runout_helper.runout_pause = False                 # AFC will deal with pause
+
+    filament_switch_config.set( new_switch_name, 'debounce_delay', str(debounce_delay))
+    # Using our own DebounceButton so that callback functions can be overridden to work correctly
+    debounce_button = DebounceButton(cfg_wrap, fila)
+
+    if runout_callback:
+        #fila.runout_helper.event_delay = 0.0                # Setting event delay to zero or total delay will be event_delay + debounce_delay
+        fila.runout_helper.insert_gcode = None
+        fila.runout_helper.runout_gcode = 1
+        fila.runout_helper._runout_event_handler = runout_callback # Overriding filament event handler with AFC handler
+
+    return fila, debounce_button
+
+
+def check_and_return( value_str:str, data_values:dict[str, Any] ) -> str:
+    """
+    Common function to check if value exists in dictionary and returns value if it does.
+
+    :param value_str: Key string to check if value exists in dictionary
+    :param data_values: Dictionary of values to check for key
+
+    :return: Returns string of value if found in dictionary
+    """
+    value = "0"
+    if value_str in data_values:
+        value = data_values[value_str]
+
+    return value
+
+def get_led_color(config: ConfigWrapper, option: str,
+                  default: Optional[str] = None) -> Optional[str]:
+    """
+    Reads an LED color option and validates it at config load time.
+
+    A valid color is 3 or 4 comma separated floats (R,G,B[,W]), each from 0 to 1.
+    A value of None (no value and no default) is returned unchanged.
+
+    :param config: Config object to read the option from
+    :param option: Name of the config option
+    :param default: Value used when the option is not set
+    :return str: The color string, or None if no value and no default
+    """
+    value = config.get(option, default)
+    if value is None:
+        return None
+
+    parts = str(value).split(",")
+    error_str = (f"[{config.get_name()}] option '{option}' has invalid LED color "
+                 f"'{value}', expected 3 or 4 comma separated numbers from 0 to 1 "
+                 f"(R,G,B[,W])")
+    if len(parts) not in (3, 4):
+        raise config.error(error_str)
+    for part in parts:
+        try:
+            channel = float(part)
+        except ValueError:
+            raise config.error(error_str)
+        if not 0.0 <= channel <= 1.0:
+            raise config.error(error_str)
+    return value
+
+def section_in_config(config: ConfigWrapper, name: str) -> bool:
+    """
+    Helper function for searching through config file to see if a config section exists
+
+    :param config: Config file object to search through
+    :param name: Config section name to search for
+
+    :return bool: Returns True if config section name is found in config file
+    """
+    in_cfg = False
+    for s in config.fileconfig.sections():
+        if name in s:
+            in_cfg = True
+            break
+    return in_cfg
+
+# Copied from klipper for kalico and older klipper support
+class DebounceButton:
+    def __init__(self, config: ConfigWrapper, filament_sensor: SwitchSensor) -> None:
+        """
+        Overrides a filament switch sensor's note_filament_present with a
+        debounced handler, picking the override signature that matches the
+        sensor's own klipper/kalico/older-klipper note_filament_present
+        signature so the override is called correctly.
+
+        :param config: Klipper config wrapper for this filament switch sensor
+        :param filament_sensor: filament switch sensor object to debounce
+        """
+        self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
+        self.gcode: GCodeDispatch = self.printer.lookup_object('gcode')
+        sig = inspect.signature(filament_sensor.runout_helper.note_filament_present)
+        # Saving reference to normal function
+        self._old_note_filament_present: Callable[..., Any] = filament_sensor.runout_helper.note_filament_present
+        # Setting action callback to normal filament sensor not filament present
+        self.button_action: Callable[..., Any] = self._old_note_filament_present
+        # Overriding filament sensor filament present to button handler in this class
+        # Checking parameter length since kalico's note_filament_present function is different
+        # and also checking for older klipper versions before hash 272e8155
+        expected_params = ['eventtime', 'is_filament_present', 'force', 'immediate']
+        snapmaker_expected = ['is_filament_present', 'force']
+        param_keys = list(sig.parameters.keys())
+        if param_keys == expected_params:
+            # Exact match for the expected signature
+            filament_sensor.runout_helper.note_filament_present = self._button_handler  # type: ignore[method-assign,assignment]
+        elif param_keys == snapmaker_expected:
+            filament_sensor.runout_helper.note_filament_present = self.button_handler  # type: ignore[method-assign,assignment]
+        elif (len(sig.parameters) > 2
+              or len(sig.parameters) == 1):
+            filament_sensor.runout_helper.note_filament_present = self.button_handler  # type: ignore[method-assign,assignment]
+        else:
+            filament_sensor.runout_helper.note_filament_present = self._button_handler  # type: ignore[method-assign,assignment]
+        self.debounce_delay = config.getfloat('debounce_delay', 0., minval=0.)
+        self.logical_state: Optional[bool] = None
+        self.physical_state: Optional[bool] = None
+        self.latest_eventtime: float = 0.0
+
+    def button_handler(self, state: bool) -> None:
+        """
+        Kalico/snapmaker-style entry point: no eventtime is passed in, so the
+        current reactor time is used instead.
+
+        :param state: New filament-present state
+        """
+        self._button_handler(self.reactor.monotonic(), state)
+
+    def _button_handler(self, eventtime: float, state: bool) -> None:
+        """
+        Records a raw (not yet debounced) filament-present state change and
+        schedules the debounced event to run after debounce_delay.
+
+        :param eventtime: Reactor time the state change was observed at
+        :param state: New filament-present state
+        """
+        self.physical_state = state
+        self.latest_eventtime = eventtime
+        # if there would be no state transition, ignore the event:
+        if self.logical_state == self.physical_state:
+            return
+        trigger_time = eventtime + self.debounce_delay
+        self.reactor.register_callback(self._debounce_event, trigger_time)
+
+    def _debounce_event(self, eventtime: float) -> None:
+        """
+        Applies a debounced state transition once debounce_delay has
+        elapsed with no more recent event superseding it, then calls
+        button_action with the new state.
+
+        :param eventtime: Reactor time this debounce callback was fired at
+        """
+        # if there would be no state transition, ignore the event:
+        if self.logical_state == self.physical_state:
+            return
+        # if there were more recent events, they supersede this one:
+        # (latest_eventtime is always set by _button_handler before this callback is scheduled)
+        if (eventtime - self.debounce_delay) < self.latest_eventtime:
+            return
+        # enact state transition and trigger action
+        self.logical_state = self.physical_state
+        # Kalico is different from klipper and eventtime is not passed in
+        try:
+            try:
+                self.button_action(is_filament_present=self.logical_state)
+            except TypeError:
+                self.button_action(eventtime, self.logical_state)
+        # Catching error here since klipper can also throw and error and don't want this
+        # to actually crash klipper
+        except Exception:
+            # Last ditch effort to call klipper pause since something bad happened
+            pause_resume: PauseResume = self.printer.lookup_object("pause_resume")
+            pause_cmd: GCodeCommand = self.gcode.create_gcode_command("PAUSE", "PAUSE", {})
+            # Calling Pause command directly since user/plugins could have overridden this command
+            pause_resume.cmd_PAUSE(pause_cmd)
+
+
+class VirtualRunoutHelper:
+    """Minimal runout helper used by FPS_PSF virtual sensors."""
+
+    def __init__(self, printer: Printer, name: str, runout_cb: Optional[Callable[..., Any]] = None,
+                 enable_runout: bool = False) -> None:
+        """
+        Initialize the minimal runout helper.
+
+        :param printer: Klipper printer object.
+        :param name: Sensor name.
+        :param runout_cb: Optional callable invoked on a runout transition.
+        :param enable_runout: Whether runout callbacks are enabled.
+        """
+        self.printer: Printer = printer
+        self.gcode: GCodeDispatch = self.printer.lookup_object('gcode')
+        self._reactor: Reactor = printer.get_reactor()
+        self.name: str = name
+        self.runout_callback: Optional[Callable[..., Any]] = runout_cb
+        self.sensor_enabled: bool = bool(enable_runout)
+        self.filament_present: bool = False
+        self.insert_gcode: Optional[str] = None
+        self.runout_gcode: Optional[str] = None
+        self.event_delay: float = 0.0
+        self.min_event_systime: float = self._reactor.NEVER
+
+    def note_filament_present(self, eventtime: Optional[float] = None,
+                              is_filament_present: bool = False, **_kwargs: Any) -> None:
+        """
+        Update the tracked filament-present state and fire runout if needed.
+
+        Only acts on a state change; invokes the runout callback when filament
+        transitions to absent and runout is enabled.
+
+        :param eventtime: Reactor event time; defaults to now when None.
+        :param is_filament_present: New filament-present state.
+        :param _kwargs: Ignored extra keyword arguments for API compatibility.
+        """
+        if eventtime is None:
+            eventtime = self._reactor.monotonic()
+
+        new_state: bool = bool(is_filament_present)
+        if new_state == self.filament_present:
+            return
+
+        self.filament_present = new_state
+        idle_timeout: IdleTimeout = self.printer.lookup_object("idle_timeout")
+        is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+
+        if (not new_state
+            and self.sensor_enabled
+            and callable(self.runout_callback)
+            and is_printing):
+            try:
+                try:
+                    self.runout_callback(eventtime)
+                except TypeError:
+                    self.runout_callback(eventtime=eventtime)
+            # Catching error here since klipper can also throw and error and don't want this
+            # to actually crash klipper
+            except Exception:
+                # Last ditch effort to call klipper pause since something bad happened
+                pause_resume: PauseResume = self.printer.lookup_object("pause_resume")
+                pause_cmd: GCodeCommand = self.gcode.create_gcode_command("PAUSE", "PAUSE", {})
+                # Calling Pause command directly since user/plugins could have overridden this command
+                pause_resume.cmd_PAUSE(pause_cmd)
+
+    def get_status(self, _eventtime: Optional[float] = None) -> dict[str, bool]:
+        """
+        Return the sensor status.
+
+        :param _eventtime: Reactor event time (unused).
+        :return: Dict with `filament_detected` and `enabled` booleans.
+        """
+        return {
+            "filament_detected": bool(self.filament_present),
+            "enabled": bool(self.sensor_enabled),
+        }
+
+class VirtualFilamentSensor:
+    """Lightweight filament sensor placeholder for FPS virtual pins."""
+
+    QUERY_HELP = "Query the status of the Filament Sensor"
+    SET_HELP = "Sets the filament sensor on/off"
+
+    def __init__(self, printer: Printer, name: str, logger: AFC_logger,
+                show_in_gui: bool = True, runout_cb: Optional[Callable[..., Any]] = None,
+                enable_runout: bool = False,
+                enable_cb: Optional[Callable] = None) -> None:
+        """
+        Register a lightweight virtual filament sensor.
+
+        Adds the object under the `filament_switch_sensor` namespace (hiding it
+        from the GUI by underscore-prefixing when requested) and registers the
+        QUERY/SET filament-sensor G-code commands.
+
+        :param printer: Klipper printer object.
+        :param name: Sensor name.
+        :param show_in_gui: When False, hide the sensor from the GUI.
+        :param runout_cb: Optional runout callback passed to the runout helper.
+        :param enable_runout: Whether runout callbacks are enabled.
+        :param enable_cb: Optional callback invoked with the new ENABLE value whenever
+                          SET_FILAMENT_SENSOR toggles this sensor, allowing callers to
+                          treat the GUI switch as the filament-presence state.
+        """
+        self.printer: Printer = printer
+        self.name: str = name
+        self.logger: AFC_logger = logger
+        self.enable_cb: Optional[Callable] = enable_cb
+        self._object_name: str = f"filament_switch_sensor {name}"
+        self._object_name = self._object_name if show_in_gui else "_" + self._object_name
+        self.runout_helper: VirtualRunoutHelper = VirtualRunoutHelper(
+            printer, name, runout_cb=runout_cb, enable_runout=enable_runout)
+
+        try:
+            printer.add_object(self._object_name, self)
+        except Exception:
+            # Fallback: direct dict registration
+            objects = getattr(printer, "objects", None)
+            if isinstance(objects, dict):
+                objects.setdefault(self._object_name, self)
+
+        gcode: Optional[GCodeDispatch] = printer.lookup_object("gcode", None)
+        if gcode is None:
+            return
+        try:
+            gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name,
+                                       self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
+        except Exception:
+            pass
+        try:
+            gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name,
+                                       self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
+        except Exception:
+            pass
+
+    def get_status(self, eventtime: Optional[float]) -> dict[str, bool]:
+        """
+        Return the sensor status from the runout helper.
+
+        :param eventtime: Reactor event time passed through to the helper.
+        :return: Dict with `filament_detected` and `enabled` booleans.
+        """
+        return self.runout_helper.get_status(eventtime)
+
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd: GCodeCommand) -> None:
+        """
+        G-code handler that reports whether filament is detected.
+
+        Usage: `QUERY_FILAMENT_SENSOR SENSOR=<name>`
+
+        :param gcmd: The parsed G-code command.
+        """
+        status = self.runout_helper.get_status(None)
+        if status["filament_detected"]:
+            msg = f"Filament Sensor {self.name}: filament detected"
+        else:
+            msg = f"Filament Sensor {self.name}: filament not detected"
+        gcmd.respond_info(msg)
+
+    def cmd_SET_FILAMENT_SENSOR(self, gcmd: GCodeCommand) -> None:
+        """
+        G-code handler that enables or disables the virtual sensor.
+
+        Usage: `SET_FILAMENT_SENSOR SENSOR=<name> ENABLE=<0|1>`
+
+        :param gcmd: The parsed G-code command.
+        """
+        enable = bool(gcmd.get_int("ENABLE", 1, minval=0, maxval=1))
+        self.runout_helper.sensor_enabled = enable
+        if self.enable_cb is not None:
+            self.enable_cb(enable)
+
+class PollingEndstopWrapper:
+    """
+    Software endstop that implements Klipper's MCU endstop interface
+    (get_mcu/add_stepper/get_steppers/home_start/home_wait/query_endstop) by
+    polling a boolean trigger_func() on a reactor timer, instead of an MCU
+    reporting a real hardware trigger.
+
+    Used wherever a sensor reading needs to back a homed move the same way a
+    physical switch endstop would: a U1-style toolhead motion sensor's raw
+    button state (AFC_extruder.fila_tool_start.runout_buttun_state), which has
+    no MCU pin of its own to resolve a normal pin-based endstop from, and
+    AFC_buffer.AFCFPSBuffer's FPS analog-threshold endstops (advance/trailing).
+    """
+
+    def __init__(self, reactor: Reactor, get_mcu: Callable[[], Any],
+                trigger_func: Callable[[], bool], poll_time: float = 0.01) -> None:
+        """
+        :param reactor: Reactor used to schedule the poll timer/completion.
+        :param get_mcu: Callable returning the MCU used for trigger-time
+            estimation. Any MCU works here: triggering is detected by polling
+            trigger_func(), not by MCU-timed step counting, so this doesn't
+            need to be the exact MCU behind the sensor's pin.
+        :param trigger_func: Callable returning True when this endstop should
+            report triggered.
+        :param poll_time: Seconds between trigger_func() polls while homing.
+        """
+        self._reactor = reactor
+        self._get_mcu = get_mcu
+        self._trigger_func = trigger_func
+        self._poll_time = poll_time
+        self._steppers: list = []
+        self._trigger_time: float = 0.
+        self._completion: Optional[Any] = None
+        self._poll_timer: Optional[object] = None
+        self._home_triggered: bool = True
+
+    def get_mcu(self) -> Any:
+        """
+        :return: The MCU used for trigger-time estimation.
+        """
+        return self._get_mcu()
+
+    def add_stepper(self, stepper) -> None:
+        """
+        Register a stepper as homed by this endstop.
+
+        :param stepper: Stepper object to associate with the endstop.
+        """
+        if stepper in self._steppers:
+            return
+        self._steppers.append(stepper)
+
+    def get_steppers(self) -> list:
+        """
+        Return the steppers registered on this endstop.
+
+        :return: A new list of the associated stepper objects.
+        """
+        return list(self._steppers)
+
+    def for_stepper(self, name: str, query_endstops: QueryEndstops) -> PollingEndstopWrapper:
+        """
+        Build and register a new PollingEndstopWrapper that polls the same
+        trigger_func as this one but keeps its own stepper list. Lets several
+        homing steppers share one underlying sensor (e.g. several lanes
+        sharing a unit's U1 motion sensor) without one lane's homing move
+        pulling in the others' steppers via a shared get_steppers() list.
+
+        :param name: Name to register the new endstop under.
+        :param query_endstops: Klipper's query_endstops object to register with.
+        :return PollingEndstopWrapper: A new wrapper scoped to its own steppers.
+        """
+        clone = PollingEndstopWrapper(self._reactor, self._get_mcu,
+                                      self._trigger_func, self._poll_time)
+        query_endstops.register_endstop(clone, name)
+        return clone
+
+    def home_start(self, print_time: float, sample_time: float, sample_count: int,
+                   rest_time: float, triggered: bool = True) -> Any:
+        """
+        Begin a homing move, polling trigger_func() for the trigger condition.
+
+        If the trigger condition is already met, completes immediately;
+        otherwise starts a reactor timer that polls until it is.
+
+        :param print_time: Print time at which homing starts (unused).
+        :param sample_time: Endstop sample time (unused).
+        :param sample_count: Endstop sample count (unused).
+        :param rest_time: Endstop rest time (unused).
+        :param triggered: Trigger state to home toward; defaults to True.
+        :return: A reactor completion that resolves when triggered.
+        """
+        self._trigger_time = 0.
+        self._completion = self._reactor.completion()
+        self._home_triggered = triggered
+        # Check if already triggered before starting poll timer
+        if self._trigger_func() == triggered:
+            mcu = self.get_mcu()
+            self._trigger_time = mcu.estimated_print_time(
+                self._reactor.monotonic())
+            self._completion.complete(True)
+        else:
+            self._poll_timer = self._reactor.register_timer(
+                self._poll_sensor, self._reactor.NOW)
+        return self._completion
+
+    def _poll_sensor(self, eventtime: float) -> float:
+        """
+        Reactor timer callback that checks the trigger condition.
+
+        :param eventtime: Reactor event time of the poll.
+        :return: `reactor.NEVER` once triggered, otherwise the next poll time.
+        """
+        if self._trigger_func() == self._home_triggered:
+            mcu = self.get_mcu()
+            self._trigger_time = mcu.estimated_print_time(eventtime)
+            self._completion.complete(True)
+            return self._reactor.NEVER
+        return eventtime + self._poll_time
+
+    def home_wait(self, home_end_time: float) -> float:
+        """
+        Finish a homing move, stopping the poll timer.
+
+        :param home_end_time: Latest print time the move may run to (unused).
+        :return: The print time at which the endstop triggered, or 0 if not.
+        """
+        if self._poll_timer is not None:
+            self._reactor.unregister_timer(self._poll_timer)
+            self._poll_timer = None
+        return self._trigger_time
+
+    def query_endstop(self, print_time: float) -> int:
+        """
+        Report the instantaneous triggered state of the endstop.
+
+        :param print_time: Print time of the query (unused).
+        :return: 1 when trigger_func() is True, otherwise 0.
+        """
+        return 1 if self._trigger_func() else 0
+
+class AFC_moonraker:
+    """
+    This class is used to communicate with moonraker to look up information and post
+    data into moonrakers database
+
+    Parameters
+    ----------------
+    port: String
+        Port to connect to moonrakers localhost
+    logger: AFC_logger
+        AFC logger object to log and print to console
+    """
+    ERROR_STRING = "Error getting data from moonraker, check AFC.log for more information"
+    REQUEST_TIMEOUT = 10
+    # Unique marker queued to signal the write thread to shut down, compared
+    # only by identity. A plain object() (rather than a nested class) avoids
+    # coverage.py treating the class statement's own tiny code object as an
+    # uncoverable extra branch.
+    sentinel: object = object()
+    def __init__(self, host: str, port: str, logger: AFC_logger, reactor: Reactor) -> None:
+        """
+        :param host: Moonraker host address, e.g. http://localhost
+        :param port: Port to connect to moonrakers localhost
+        :param logger: AFC logger object to log and print to console
+        :param reactor: Klipper reactor object, used to schedule callbacks back
+                        onto the reactor thread from the background writer thread
+        """
+        self.port           = port
+        self.logger         = logger
+        self.reactor        = reactor
+        self.host           = f'{host.rstrip("/")}:{port}'
+        self.database_url   = urljoin(self.host, "server/database/item")
+        self.afc_stats_key  = "afc_stats"
+        self.afc_stats: Optional[dict[str, Any]] = None
+        self.last_stats_time: Optional[datetime] = None
+        self._lane_data     = False
+        self.logger.debug(f"Moonraker url: {self.host}")
+        self.FILENAME_PATH: str = "server/files/metadata?filename="
+
+        # Fire-and-forget writes (stat updates, lane_data pushes, database
+        # deletes) run on this background thread so a slow/hung moonraker
+        # can't stall the reactor. A single worker keeps them ordered.
+        self._write_thread_wait = True
+        self._write_queue: Queue[tuple[Any, Any]] = Queue()
+        self._write_thread = threading.Thread(target=self._write_worker, daemon=True,
+                                              name="afc_moonraker")
+        self._write_thread.start()
+
+    def _log_async(self, log_fn: Callable[..., Any], message: str, **kwargs: Any) -> None:
+        """
+        Schedules a logger call to run on the reactor thread via
+        register_async_callback. AFC_logger touches gcode/webhooks state that
+        isn't safe to call from the background writer thread, and this is also
+        safe to call from the main/reactor thread, so _get_results uses it
+        for every log call regardless of which thread it's running on.
+
+        :param log_fn: Bound AFC_logger method to call (e.g. self.logger.error)
+        :param message: Message to log
+        """
+        self.reactor.register_async_callback(
+            lambda et, log_fn=log_fn, message=message, kwargs=kwargs: log_fn(message, **kwargs))
+
+    def join_thread(self) -> None:
+        """
+        Stops worker thread when klipper:disconnect happens
+        """
+        self._write_queue.put_nowait((self.sentinel, ""))
+        self._write_thread_wait = False
+        self._write_thread.join()
+
+    def _write_worker(self) -> None:
+        """
+        Background thread loop that drains queued fire-and-forget moonraker
+        requests (stat updates, lane_data pushes, database deletes) in the
+        order they were queued. Runs for the life of the process (daemon
+        thread) so it needs no explicit shutdown.
+        """
+        try:
+            thread_name = threading.current_thread().name
+            chelper.get_ffi()[1].set_thread_name(thread_name.encode("utf-8"))
+        except:
+            pass
+        while self._write_thread_wait:
+            func, args = self._write_queue.get()
+            if func is self.sentinel:
+                return
+            try:
+                func(*args)
+            except Exception:
+                self._log_async(self.logger.error, "Unexpected error in moonraker background writer")
+                self._log_async(self.logger.debug, traceback.format_exc())
+
+    def _get_results(self, url_string: Union[str, Request], print_error: bool=True) -> Optional[Any]:
+        """
+        Helper function to get results, check for errors and return data if successful
+
+        :param url_string: URL encoded string or Request to fetch/post data to moonraker
+        :param print_error: Set to True for error to be displayed in console/mainsail panel, setting
+                            to False will still write error to log via debug message
+
+        :returns: Returns result dictionary if data is valid, returns None if and error occurred
+        """
+        data = None
+        # Only print error to console when set, else still print errors bug with debug
+        # logger so that messages are still written to log for debugging purposes
+        logger: Callable[..., None]
+        if print_error:
+            logger = self.logger.error
+        else:
+            logger = self.logger.debug
+
+        try:
+            with urlopen(url_string, timeout=self.REQUEST_TIMEOUT) as resp:
+                if (resp.status >= 200
+                    and resp.status <= 300):
+                    data = json.load(resp)
+                else:
+                    self._log_async(logger, self.ERROR_STRING)
+                    self._log_async(logger, f"Response: {resp.status} Reason: {resp.reason}")
+        except:
+            self._log_async(logger, self.ERROR_STRING, traceback=traceback.format_exc())
+            data = None
+        return data['result'] if data is not None else data
+
+    def wait_for_moonraker(self, toolhead: Any, timeout: int=30) -> bool:
+        """
+        Function to wait for moonraker to start, times out after passed in timeout value
+
+        :param toolhead: Toolhead object so that non blocking waits can happen
+        :param timeout: Timeout out trying after this many seconds
+
+        :return: Returns True if connected to moonraker and a timeout did no occur, returns False if
+                 not connected after waiting max timeout value
+        """
+        self.logger.info(f"Waiting max {timeout}s for moonraker to connect")
+        for i in range(0,timeout):
+            resp = self._get_results(urljoin(self.host, 'server/info'), print_error=False)
+            if resp is not None:
+                self.logger.debug(f"Connected to moonraker after {i} tries")
+                return True
+            else:
+                toolhead.dwell(1)
+        self.logger.warning(f"Failed to connect to moonraker after {timeout} seconds, check AFC.log for more information")
+        return False
+
+    def get_spoolman_server(self) -> Optional[str]:
+        """
+        Queries moonraker to see if spoolman is configured, returns True when
+        spoolman is configured
+
+        :returns: Returns string for Spoolman IP, returns None if it is not configured
+        """
+        resp = self._get_results(urljoin(self.host, 'server/config'))
+        # Check to make sure response is valid and spoolman exists in dictionary
+        if (resp is not None
+            and 'orig' in resp
+            and 'spoolman' in resp['orig']):
+            return str(resp['orig']['spoolman']['server'])     # check for spoolman and grab url
+        else:
+            self.logger.debug("Spoolman server is not defined")
+            return None
+
+    def get_file_metadata(self, filename: str, callback: Callable[[Optional[dict[str, Any]]], None]) -> None:
+        """
+        Queues a query for a print file's metadata to run on the background
+        writer thread. Runs asynchronously because the only caller of this
+        (print-start bookkeeping) runs from a reactor timer while printing
+        and can't block on the HTTP round trip to moonraker.
+
+        :param filename: Filename to query moonraker and pull metadata for
+        :param callback: Called with the metadata dict (or None on failure)
+                         once the query completes. Runs on the reactor thread.
+        """
+        self._write_queue.put_nowait((self._get_file_metadata_sync, (filename, callback)))
+
+    def _get_file_metadata_sync(self, filename: str, callback: Callable[[Optional[dict[str, Any]]], None]) -> None:
+        """
+        Does the actual GET for a print file's metadata. Called from the
+        background writer thread; schedules callback on the reactor thread.
+
+        :param filename: Filename to query moonraker and pull metadata for
+        :param callback: Called with the metadata dict (or None on failure)
+        """
+        resp: Optional[dict[str, Any]] = self._get_results(urljoin(self.host, f"{self.FILENAME_PATH}{quote(filename)}"))
+        self.reactor.register_async_callback(lambda et, resp=resp: callback(resp))
+
+    def get_afc_stats(self) -> Optional[dict[str, Any]]:
+        """
+        Queries moonraker database for all `afc_stats` entries and returns results if afc_stats exist.
+        Function also caches results and refetches data if cache is older than 60s. This is done to help
+        cut down on how much data is fetched from moonraker.
+
+        :return: Dictionary of afc_stats entries, None if afc_stats entry does not exist
+        """
+        resp = None
+        # Initially set to True since first time data always needs to be fetched
+        refetch_data = True
+        current_time = datetime.now()
+
+        # Check to see if data is older than 60 seconds and refreshes
+        if self.last_stats_time is not None:
+            refetch_data = False
+            delta = current_time - self.last_stats_time
+            if delta.seconds > 60:
+                refetch_data = True
+                self.last_stats_time = current_time
+        else:
+            self.last_stats_time = datetime.now()
+
+        # Cache results to keep queries to moonraker down
+        if (self.afc_stats is None
+            or refetch_data):
+            resp = self._get_results(urljoin(self.database_url, f"?namespace={self.afc_stats_key}"))
+            if resp is not None:
+                self.afc_stats = resp
+            else:
+                self.logger.debug("AFC_stats not in database")
+        values = None
+        if self.afc_stats is not None:
+            values = self.afc_stats['value']
+
+        return values
+
+    def update_afc_stats(self, key: str, value: Any) -> None:
+        """
+        Queues an update to afc_stats in moonrakers database with key, value pair.
+        Runs on the background writer thread so the caller isn't blocked.
+
+        :param key: The key indicating the field where the value should be inserted
+        :param value: The value to insert into the database
+        """
+        self._write_queue.put_nowait((self._update_afc_stats_sync, (key, value)))
+
+    def _update_afc_stats_sync(self, key: str, value: Any) -> None:
+        """
+        Does the actual POST to update afc_stats in moonrakers database.
+        Called from the background writer thread.
+
+        :param key: The key indicating the field where the value should be inserted
+        :param value: The value to insert into the database
+        """
+        resp = None
+        post_payload = {
+            "request_method": "POST",
+            "namespace": self.afc_stats_key,
+            "key": key,
+            "value": value
+        }
+        req = Request(self.database_url, urlencode(post_payload).encode())
+
+        resp = self._get_results(req)
+        if resp is None:
+            self._log_async(self.logger.error,
+                            f"Error when trying to update {key} in moonraker, see AFC.log for more info")
+
+    def get_spool(self, id: int, callback: Callable[[Optional[dict[str, Any]]], None]) -> None:
+        """
+        Queues a query for a spool's data from spoolman (via moonrakers proxy)
+        to run on the background writer thread. Runs asynchronously because
+        this can be called from a load sequence and can't block on the HTTP
+        round trip.
+
+        :param id: SpoolID to lookup and fetch data from spoolman
+        :param callback: Called with the spool data dict (or None if error
+                         occurred or ID does not exist) once the query completes.
+                         Runs on the reactor thread.
+        """
+        self._write_queue.put_nowait((self._get_spool_sync, (id, callback)))
+
+    def _get_spool_sync(self, id: int, callback: Callable[[Optional[dict[str, Any]]], None]) -> None:
+        """
+        Does the actual GET for a spool's data from spoolman. Called from the
+        background writer thread; schedules callback on the reactor thread.
+
+        :param id: SpoolID to lookup and fetch data from spoolman
+        :param callback: Called with the spool data dict (or None on failure)
+        """
+        request_payload = {
+            "request_method": "GET",
+            "path": f"/v1/spool/{id}"
+        }
+        spool_url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request( spool_url, urlencode(request_payload).encode() )
+
+        resp = self._get_results(req)
+        if resp is None:
+            self._log_async(self.logger.info, f"SpoolID: {id} not found")
+        self.reactor.register_async_callback(lambda et, resp=resp: callback(resp))
+
+    def check_for_td1(self) -> tuple[bool, bool, bool]:
+        """
+        Checks moonrakers server/config endpoint to see if user has `[td1]` and `[lane_data]`
+        specified in their moonraker.conf file.
+
+        :returns bool,bool,bool: True if `[td1] is defined,
+                                 True if a TD-1 device is connected and found,
+                                 True if `[lane_data]` is defined
+        """
+        td1 = False
+        td1_defined = False
+        resp = self._get_results(urljoin(self.host, 'server/config'))
+        if resp is not None:
+            if "td1" in resp['orig']:
+                td1_defined = True
+                td1_data = self.get_td1_data()
+                if td1_data is not None and len(td1_data) > 0:
+                    td1 = True
+
+            if "lane_data" in resp['orig']:
+                self._lane_data = True
+        return td1_defined, td1, self._lane_data
+
+    def get_td1_data(self) -> Optional[dict[str, Any]]:
+        """
+        Synchronous fetch for TD-1 data from moonrakers `machine/td1/data` endpoint.
+
+        See get_td1_data_async() for the non-blocking version.
+
+        :returns dict: Returns dictionary of TD-1 devices by serial numbers with their data,
+                       returns None if no TD-1 devices are found
+        """
+        url = urljoin(self.host, "machine/td1/data")
+        req = Request(url=url)
+        resp = self._get_results(req)
+        if (resp is not None
+            and resp.get("devices")):
+            return dict(resp["devices"])
+        else:
+            return None
+
+    def get_td1_data_async(self, callback: Callable[[Optional[dict[str, Any]]], None]) -> None:
+        """
+        Queues a query for TD-1 device data to run on the background writer
+        thread. Runs asynchronously because for situations where a fetch cannot
+        block on the HTTP round trip during a print (eg. during a toolchange when printing).
+
+        See get_td1_data() for the synchronous version.
+
+        :param callback: Called with the TD-1 devices dict (or None on failure)
+                         once the query completes. Runs on the reactor thread.
+        """
+        self._write_queue.put_nowait((self._get_td1_data_async_sync, (callback,)))
+
+    def _get_td1_data_async_sync(self, callback: Callable[[Optional[dict[str, Any]]], None]) -> None:
+        """
+        Does the actual GET for TD-1 device data. Called from the background
+        writer thread; schedules callback on the reactor thread.
+
+        :param callback: Called with the TD-1 devices dict (or None on failure)
+        """
+        url = urljoin(self.host, "machine/td1/data")
+        req = Request(url=url)
+        resp = self._get_results(req)
+        devices = resp["devices"] if resp is not None and "devices" in resp else None
+        self.reactor.register_async_callback(lambda et, devices=devices: callback(devices))
+
+    def reboot_td1(self, serial_number: str) -> Optional[dict[str, Any]]:
+        """
+        Send's TD-1 serial to moonrakers `machine/td1/reboot` endpoint to force restart TD-1
+        device
+
+        :param serial_number: Serial number of TD-1 device to reboot
+        :return dict: Status of reboot,
+                      "ok"-reboot happened successfully
+                      "serial_error"-serial number was not supplied
+                      "key_error"-serial number supplied is not correct
+        """
+        url = urljoin(self.host, "machine/td1/reboot")
+        td1_reboot_payload = {
+            "request_method": "POST",
+            "serial": serial_number
+        }
+        req = Request( url, urlencode(td1_reboot_payload).encode())
+        resp = self._get_results(req)
+        return resp
+
+    def send_lane_data(self, data: Any) -> None:
+        """
+        Queues lane data to be sent to moonrakers `machine/set_lane_data` endpoint so that
+        other programs can query moonrakers `machine/lane_data` endpoint to see what lanes
+        are loaded and what their colors are. Runs on the background writer thread so the
+        caller isn't blocked.
+
+        :params data: Data to send to endpoint
+        """
+        self._write_queue.put_nowait((self._send_lane_data_sync, (data,)))
+
+    def _send_lane_data_sync(self, data: Any) -> None:
+        """
+        Does the actual POST of lane data to moonraker. Called from the
+        background writer thread.
+
+        :params data: Data to send to endpoint
+        """
+        # TODO: keeping lane data commented out just incase moonraker wants to add
+        # back lane_data module
+        # if self._lane_data:
+        # url = urljoin( self.host, 'machine/set_lane_data')
+        try:
+            req = Request( url=self.database_url, data=json.dumps(data).encode(),
+                        method="POST", headers={"Content-Type": "application/json"})
+            if self._get_results(req) is None:
+                self._log_async(self.logger.error, "Error sending lane data, check AFC.log for more information")
+        except HTTPError as e:
+            self._log_async(self.logger.error, "Error occurred when trying to send lane data to moonraker database,"+
+                            "\nplease check AFC.log for more information.")
+            self._log_async(self.logger.debug, f"{e}")
+
+    def remove_database_entry(self, namespace: str, key: str) -> None:
+        """
+        Queues removal of an entry in moonrakers database. Runs on the
+        background writer thread so the caller isn't blocked.
+
+        :param namespace: Namespace for moonrakers database
+        :param key: Key to delete from namespace
+        """
+        self._write_queue.put_nowait((self._remove_database_entry_sync, (namespace, key)))
+
+    def _remove_database_entry_sync(self, namespace: str, key: str) -> None:
+        """
+        Does the actual DELETE of an entry from moonrakers database. Called
+        from the background writer thread.
+
+        :param namespace: Namespace for moonrakers database
+        :param key: Key to delete from namespace
+        """
+        try:
+            payload = {
+                "request_method": "DELETE",
+                "namespace": namespace,
+                "key": key
+            }
+            req = Request( self.database_url, urlencode(payload).encode(), method="DELETE")
+            with urlopen(req):
+                pass
+            self._log_async(self.logger.debug, f"Removing {key} from {namespace}")
+        except HTTPError as e:
+            self._log_async(self.logger.debug,
+                            f"Error occurred when trying to delete {key} from {namespace} namespace")
+            self._log_async(self.logger.debug, f"{e}")
+
+    def delete_lane_data(self) -> None:
+        """
+        Function recursively delete's lane_data namespace from moonrakers database.
+        Queries the current keys synchronously (only run once at boot), then queues
+        each removal on the background writer thread via remove_database_entry.
+
+        Purpose would be to remove data upon boot just incase someone when from a 8 lane
+        system to a 4 lane system, removing and then readding will make sure database has
+        current up to date data.
+        """
+        resp = self._get_results(urljoin(self.database_url, "?namespace=lane_data"), print_error=False)
+        if resp is not None:
+            value = resp.get("value")
+            for key in value.keys():
+                self.remove_database_entry("lane_data", key)
+
+    def trigger_db_backup(self) -> bool:
+        """
+        Triggers moonrakers database backup with moonrakers default naming scheme
+        """
+        error = False
+        try:
+            req = Request( urljoin(self.host, 'server/database/backup'), method="POST",
+                          headers={"Content-Type": "application/json"})
+            resp = self._get_results(req)
+            if resp is None:
+                self.logger.error("Error trying to backup moonraker database, check AFC.log for more information")
+                error = True
+            else:
+                self.logger.info(f"Moonrakers database backed up to {resp['backup_path']}")
+        except HTTPError as e:
+            self.logger.error("Error occurred when trying to backup moonraker database,"+
+                              "\nplease check AFC.log for more information.")
+            self.logger.debug(f"{e}")
+            error = True
+        return error
+
+class AFC_PrintFileMetaData:
+    """
+    Wraps moonraker's file metadata lookup for the file currently being printed,
+    caching the result so tool change count/temperatures can be read repeatedly
+    without re-querying moonraker.
+    """
+    def __init__(self, moonraker: AFC_moonraker, logger: AFC_logger):
+        """
+        :param moonraker: Moonraker object to query file metadata from
+        :param logger: Logger object to print debug/info messages to
+        """
+        self._moonraker = moonraker
+        self.logger = logger
+        self._filename: str = ""
+        self._metadata: dict[str, Any] = {}
+
+    @property
+    def filename(self) -> str:
+        """
+        :return str: Filename that metadata is currently cached for
+        """
+        return self._filename
+
+    def query_filename(self, value: str, on_fetched: Optional[Callable[[], None]] = None) -> None:
+        """
+        Sets current filename and queues a moonraker query for its metadata,
+        caching the result for the `tool_change_count`/`tool_temperatures`
+        properties once it arrives. Runs asynchronously since the only caller
+        of this runs from a reactor timer during printing and can't block on
+        the HTTP round trip.
+
+        :param value: Filename to query moonraker and pull metadata for
+        :param on_fetched: Called (on the reactor thread) once metadata has been
+                           fetched and cached, or immediately if there's nothing
+                           to fetch
+        """
+        self._filename = value
+        if (self._moonraker
+            and value):
+            self._moonraker.get_file_metadata(
+                value, lambda resp: self._apply_metadata(value, resp, on_fetched))
+        elif on_fetched is not None:
+            on_fetched()
+
+    def _apply_metadata(self, filename: str, resp: Optional[dict[str, Any]],
+                        on_fetched: Optional[Callable[[], None]]) -> None:
+        """
+        Caches a metadata query result, guarding against a stale response
+        landing after filename has since changed again (e.g. the print ended
+        and reset() ran, or a new print started, before this query returned).
+
+        :param filename: Filename this response was fetched for
+        :param resp: Metadata dict returned by moonraker, or None on failure
+        :param on_fetched: Called once cached, if provided
+        """
+        if filename == self._filename:
+            self._metadata = resp or {}
+        if on_fetched is not None:
+            on_fetched()
+
+    @property
+    def tool_change_count(self) -> int:
+        """
+        :return int: Number of filament change counts if `filament_change_count` is in
+                     cached metadata, zero if not found
+        """
+        change_count = 0
+        if (self._metadata
+            and "filament_change_count" in self._metadata):
+            change_count = self._metadata.get("filament_change_count", 0)
+        else:
+            self.logger.debug(f"Filament change count metadata not found for file:{self._filename}")
+        return change_count
+
+    @property
+    def tool_temperatures(self) -> List[int]:
+        """
+        :return List[int]: Per-tool temperatures from cached metadata, empty list if not found
+        """
+        temperature_list = []
+        if self._metadata:
+            temperature_list = self._metadata.get("filament_temps", [])
+            if not temperature_list:
+                # Try and get variable thats used for snapmaker U1
+                temperature_list = self._metadata.get("nozzle_temp", [])
+        return temperature_list
+
+    def reset(self) -> None:
+        """
+        Clears cached filename and metadata, used when a print ends/is reset so
+        stale tool change/temperature data isn't reused for the next print.
+        """
+        self._filename = ""
+        self._metadata = {}

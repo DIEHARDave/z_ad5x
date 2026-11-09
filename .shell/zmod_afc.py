@@ -7,6 +7,7 @@
 import os
 import json
 import queue
+import configparser
 import logging
 import threading
 import requests
@@ -26,6 +27,17 @@ MSG = {
 class _Obj:
     def __init__(self, fn):
         self.get_status = fn
+
+# Переменная мода afc до klippy:ready (save_variables ещё может быть не загружен):
+# 2 - полный AFC (ArmoredTurtle, /usr/data/zmod/zmod/AFC), эмуляция не нужна
+def _afc_mode(config):
+    try:
+        fn = os.path.expanduser(config.getsection('save_variables').get('filename'))
+        cp = configparser.ConfigParser()
+        cp.read(fn)
+        return int(cp.get('Variables', 'afc', fallback='0'))
+    except Exception:
+        return 0
 
 class zmod_afc:
     def __init__(self, config):
@@ -55,6 +67,9 @@ class zmod_afc:
         self.active_spool = None  # spool_id, переданный Moonraker как активный
         self.native_q = None    # очередь /control родного экрана (отдельный поток, по порядку)
         self.pending = {}       # слот -> (HEX, тип, до): записано, но zmod_color ещё не видит
+        self.full = _afc_mode(config) == 2 and config.has_section('AFC')
+        if self.full:
+            return              # команды, объекты и lane_data - у полного AFC
         for cmd in ('SET_COLOR', 'SET_MATERIAL', 'SET_MAP', 'SET_WEIGHT', 'CHANGE_TOOL', 'TOOL_UNLOAD', 'LANE_UNLOAD'):
             self.gcode.register_command(cmd, getattr(self, 'cmd_' + cmd))
         for cmd in ('AFC_RESET', 'RESET_FAILURE', 'AFC_CLEAR_MESSAGE'):
@@ -65,7 +80,7 @@ class zmod_afc:
     def _ready(self):
         self.color = self.printer.lookup_object('zmod_color')
         self.save_variables = self.printer.lookup_object('save_variables', None)
-        self.enabled = self.save_variables is not None and self.save_variables.allVariables.get('afc', 0) == 1
+        self.enabled = self.save_variables is not None and self.save_variables.allVariables.get('afc', 0) in (1, 2)  # 2 без [AFC] (C5Pro, родной экран) - эмуляция
         if not self.enabled:
             return
         self.reactor = self.printer.get_reactor()
