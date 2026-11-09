@@ -151,7 +151,7 @@ prepare_chroot()
             check_link /usr/data/zmod/klipper/klippy/extras/zmod_ifs.py /usr/data/zmod/zmod/.shell/zmod_ifs.py
             check_link /usr/data/zmod/klipper/klippy/extras/zmod_tenz.py /usr/data/zmod/zmod/.shell/zmod_tenz.py
             # Полный AFC (afc = 2, без родного экрана): модули AFC, иначе убрать ссылки
-            for f in /usr/data/zmod/zmod/AFC/extras/*.py; do
+            for f in /usr/data/zmod/zmod/AFC/extras/*.py /usr/data/zmod/zmod/.shell/AFC_IFS.py; do
                 l=/usr/data/zmod/klipper/klippy/extras/$(basename $f)
                 if grep -q "^afc = 2" /opt/config/mod_data/variables.cfg && grep -q "^display_off = 1" /opt/config/mod_data/variables.cfg; then
                     check_link $l $f

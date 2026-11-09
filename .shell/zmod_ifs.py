@@ -405,6 +405,9 @@ class zmod_ifs:
         finally:
             self._recovering = False
 
+    def _afc_full(self):
+        return getattr(self.printer.lookup_object('zmod_afc', None), 'full', False)
+
     def print_str(self, string, info=True):
         if info:
             self.gcode.respond_info(string)
@@ -650,7 +653,13 @@ class zmod_ifs:
                     cur_prutok = 98
 
         channel = gcmd.get_int('CHANNEL', cur_prutok)
-        if channel != cur_prutok:
+        if self._afc_full():
+            # Полный AFC (afc = 2): первую загрузку ведёт T(n) AFC (уже загруженная lane - без движений)
+            if channel != cur_prutok:
+                self.gcode.run_script_from_command("_AFC_IFS_SYNC")
+                self.gcode.run_script_from_command(f"T{channel}")
+            self.gcode.run_script_from_command(f"SDCARD_SET_CHANNEL CHANNEL={channel}")
+        elif channel != cur_prutok:
             self.gcode.run_script_from_command(f"_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=0 RESTORE_TEMP=0")
         else:
             self.print_str(f"Указываю активный пруток T{cur_prutok}" if self.lang == 'ru' else f"Setting active filament T{cur_prutok}")
@@ -661,6 +670,11 @@ class zmod_ifs:
     def cmd_ANALOG_PRUTOK(self, gcmd):
         if not self.ifs:
             self.gcode.run_script_from_command("_IFS_OFF")
+            return
+        if self._afc_full():
+            # Полный AFC: замену при окончании прутка ведёт AFC (датчик слота, SET_RUNOUT);
+            # датчик головы уже поставил паузу - печать ждёт
+            self.gcode.run_script_from_command("_PRINT_HEAD INFO=0")
             return
 
         prutok = 1

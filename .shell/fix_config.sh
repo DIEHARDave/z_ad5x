@@ -32,6 +32,7 @@ afc_full_links()
         for f in ${AFC_FULL_DIR}/*.py; do
             check_link "$1/$(basename $f)" "$f"
         done
+        check_link "$1/AFC_IFS.py" /usr/data/zmod/zmod/.shell/AFC_IFS.py
     else
         afc_full_unlink "$1"
     fi
@@ -40,8 +41,30 @@ afc_full_links()
 afc_full_unlink()
 {
     for f in "$1"/*.py; do
-        [ -L "$f" ] && case "$(readlink "$f")" in ${AFC_FULL_DIR}/*) rm -f "$f" ;; esac
+        [ -L "$f" ] && case "$(readlink "$f")" in ${AFC_FULL_DIR}/*|/usr/data/zmod/zmod/.shell/AFC_IFS.py) rm -f "$f" ;; esac
     done
+}
+
+# Конфиг AFC (AFC/ad5x_afc.cfg -> mod/afc.cfg) перед mod_data/user.cfg, чтобы user.cfg мог его менять
+afc_full_config()
+{
+    if afc_full_enabled; then
+        check_link ${MOD_CONF}/mod/afc.cfg /usr/data/zmod/zmod/AFC/ad5x_afc.cfg
+        if ! grep -q '^\[include ./mod/afc.cfg\]' ${PRINTER_CFG}; then
+            if grep -q '^\[include ./mod_data/user.cfg\]' ${PRINTER_CFG}; then
+                sed -i '/^\[include \.\/mod_data\/user\.cfg\]/i [include ./mod/afc.cfg]' ${PRINTER_CFG}
+            else
+                echo "[include ./mod/afc.cfg]" >> ${PRINTER_CFG}
+            fi
+            NEED_REBOOT=1
+        fi
+    else
+        if grep -q '^\[include ./mod/afc.cfg\]' ${PRINTER_CFG}; then
+            sed -i '/^\[include \.\/mod\/afc\.cfg\]$/d' ${PRINTER_CFG}
+            NEED_REBOOT=1
+        fi
+        [ -L ${MOD_CONF}/mod/afc.cfg ] && rm -f ${MOD_CONF}/mod/afc.cfg
+    fi
 }
 
 enable_zmod_ad5m()
@@ -119,6 +142,7 @@ restore_base()
     grep -q '^\[include ./mod/mod.cfg' ${MOD_CONF}/printer.cfg && sed -i '/mod.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod/klipper11.cfg' ${MOD_CONF}/printer.cfg && sed -i '/klipper11.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod/klipper13.cfg' ${MOD_CONF}/printer.cfg && sed -i '/klipper13.cfg/d' ${MOD_CONF}/printer.cfg
+    grep -q '^\[include ./mod/afc.cfg' ${MOD_CONF}/printer.cfg && sed -i '/mod\/afc.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod_data/plugins.cfg' ${MOD_CONF}/printer.cfg && sed -i '/plugins.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod_data/user.cfg' ${MOD_CONF}/printer.cfg && sed -i '/user.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod/switch_sensor.cfg' ${MOD_CONF}/printer.cfg && sed -i '/switch_sensor.cfg/d' ${MOD_CONF}/printer.cfg
@@ -594,7 +618,7 @@ unset LD_PRELOAD
         grep -q "M400" ${KLIPPER_DIR}/klippy/extras/filament_switch_sensor.py && sed -i "s/M400//" ${KLIPPER_DIR}/klippy/extras/filament_switch_sensor.py
     fi
     if [ ${AD5X} -eq 1 ]; then
-        grep -q "zmod 1.13" ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py || cp /usr/data/zmod/zmod/.shell/virtual_sdcard.py ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py
+        grep -q "zmod 1.14" ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py || cp /usr/data/zmod/zmod/.shell/virtual_sdcard.py ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_color.py /usr/data/zmod/zmod/.shell/zmod_color.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_afc.py /usr/data/zmod/zmod/.shell/zmod_afc.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_tenz.py /usr/data/zmod/zmod/.shell/zmod_tenz.py
@@ -603,6 +627,7 @@ unset LD_PRELOAD
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_ifs_motion_sensor.py /usr/data/zmod/zmod/.shell/zmod_ifs_motion_sensor.py
         check_link /opt/config/rw /usr/prog/config/
         afc_full_links ${KLIPPER_DIR}/klippy/extras
+        afc_full_config
     fi
 
     check_link ${KLIPPER_DIR}/klippy/extras/zmod.py /usr/data/zmod/zmod/.shell/zmod.py

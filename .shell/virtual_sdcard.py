@@ -314,9 +314,15 @@ class VirtualSD:
                     if self.print_channel != self.load_channel:
                         self.gcode.run_script("M400")
                         self.change_filament = True
-                        # zmod 1.13
+                        # zmod 1.14
                         try:
-                            self.gcode.run_script(f"_A_CHANGE_FILAMENT CHANNEL={self.print_channel} RESTORE_POSITION=1 RESTORE_TEMP=1")
+                            if getattr(self.printer.lookup_object('zmod_afc', None), 'full', False):
+                                # Полный AFC (afc = 2): смену ведёт T(n) AFC, синхронно; юнит AFC_IFS вызывает _A_CHANGE_FILAMENT
+                                self.gcode.run_script("_AFC_IFS_SYNC")
+                                self.gcode.run_script(f"T{self.print_channel}")
+                                self.change_filament = False
+                            else:
+                                self.gcode.run_script(f"_A_CHANGE_FILAMENT CHANNEL={self.print_channel} RESTORE_POSITION=1 RESTORE_TEMP=1")
                         except Exception as e:
                             logging.exception("virtual_sdcard change filament")
                             self.change_filament = False
