@@ -40,6 +40,38 @@ for _lst in (_afc_lane.ONLY_LOAD_TYPES, _afc_lane.EXCLUDE_TYPES, _afc_unit.SENSO
         _lst.append(IFS_TYPE)
 
 
+def _patch_metadata_retry():
+    # Zmod кладёт 3mf_print/*.gcode за секунды до старта печати; Moonraker ещё не знает
+    # файл и отвечает 404 - AFC пишет ошибку и считает 0 смен. Повторяем запрос молча
+    # (фоновый поток AFC, sleep не блокирует reactor), последняя попытка - штатная.
+    try:
+        import time
+        from urllib.parse import quote, urljoin
+        import extras.AFC_utils as _afc_utils
+        cls = _afc_utils.AFC_moonraker
+    except Exception:
+        return
+    if getattr(cls, '_ifs_metadata_retry', False):
+        return
+    orig = cls._get_file_metadata_sync
+
+    def sync(self, filename, callback):
+        url = urljoin(self.host, f"{self.FILENAME_PATH}{quote(filename)}")
+        for _ in range(METADATA_TRIES):
+            resp = self._get_results(url, print_error=False)
+            if resp is not None:
+                self.reactor.register_async_callback(lambda et, resp=resp: callback(resp))
+                return
+            time.sleep(1.)
+        return orig(self, filename, callback)
+    cls._get_file_metadata_sync = sync
+    cls._ifs_metadata_retry = True
+
+
+METADATA_TRIES = 10    # сек ожидания метаданных файла печати в Moonraker
+_patch_metadata_retry()
+
+
 def color_hex(value):
     """'#RRGGBB' (верхний регистр) или ''."""
     v = str(value or '').strip().lstrip('#')
