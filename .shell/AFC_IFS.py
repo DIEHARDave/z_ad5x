@@ -71,8 +71,9 @@ class afcIFS(afcUnit):
         self.afc_runout = config.getboolean('afc_runout', True)
         self.load_cmd = config.get('load_cmd', 'INSERT_PRUTOK_IFS PRUTOK={slot} TRASH=1')
         # Выгрузка из головы: обрезать и вывести пруток из экструдера, он остаётся в трубке
-        # готовым к загрузке (как старый пруток при смене)
-        self.unload_cmd = config.get('unload_cmd', 'IFS_REMOVE_CURRENT_PRUTOK')
+        # готовым к загрузке (как старый пруток при смене), затем разблокировать IFS
+        # (как _IFS_REMOVE_CURRENT_PRUTOK меню Zmod)
+        self.unload_cmd = config.get('unload_cmd', 'IFS_REMOVE_CURRENT_PRUTOK NEED_TRASH=1' + chr(10) + 'IFS_F18')
         # Eject: полная выгрузка - пруток уходит из трубки к слоту, катушку можно снять
         self.eject_cmd = config.get('eject_cmd', 'REMOVE_PRUTOK_IFS PRUTOK={slot}')
         self.swap_cmd = config.get('swap_cmd',
