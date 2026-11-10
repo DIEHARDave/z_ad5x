@@ -139,6 +139,7 @@ class afcIFS(afcUnit):
         self.gcode.register_command('_AFC_IFS_HEAD_RUNOUT', self.cmd_AFC_IFS_HEAD_RUNOUT,
                                     desc='AFC_IFS: filament ran out at the head sensor - AFC runout for the lane in the toolhead')
         self._runout_tool = None  # T(n) печати на время замены бесконечной катушкой
+        self._left = None         # lane, ушедшая из головы мимо AFC
         self._prepare_varfile(config)
 
     def _prepare_varfile(self, config):
@@ -354,11 +355,13 @@ class afcIFS(afcUnit):
             return
         if have is not None:
             self.logger.info("AFC_IFS: %s left the toolhead outside AFC" % have.name)
+            self._left = have.name   # для _AFC_IFS_HEAD_RUNOUT: опрос видит пустую голову раньше датчика
             have.set_tool_unloaded(normal_toolchange=True)
             if have.prep_state:
                 have.status = AFCLaneState.LOADED
         if want is not None:
             self.logger.info("AFC_IFS: %s is in the toolhead (Zmod slot %d)" % (want.name, slot))
+            self._left = None
             want.loaded_to_hub = True
             want.set_tool_loaded(normal_toolchange=True)
         self.afc.save_vars()
@@ -448,6 +451,12 @@ class afcIFS(afcUnit):
         """
         afc = self.afc
         lane = afc.lanes.get(afc.current) if afc.current else None
+        if lane is None:
+            # Опрос уже снял lane с головы (датчик головы срабатывает с задержкой паузы):
+            # ушедшая lane, иначе последний слот Zmod (FFMInfo channel не сбрасывается)
+            lane = afc.lanes.get(self._left) if self._left else None
+            if lane is None:
+                lane = self._lane_for_slot(int(self._status().get('channel') or 0))
         if lane is None or lane.unit_obj is not self:
             gcmd.respond_info("AFC_IFS: head runout, no IFS lane in the toolhead")
             return
