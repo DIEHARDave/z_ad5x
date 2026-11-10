@@ -328,6 +328,9 @@ class VirtualSD:
                     self.print_channel = int(cmd[1:])
                     if self.print_channel != self.load_channel:
                         self.gcode.run_script("M400")
+                        if self.must_pause_work:
+                            # Пауза пришла во время M400: строку T не съедаем, смена будет после RESUME
+                            break
                         self.change_filament = True
                         # zmod 1.14
                         try:
