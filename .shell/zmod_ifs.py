@@ -634,6 +634,19 @@ class zmod_ifs:
             # Закончился
             self.gcode.run_script_from_command("_PRINT_IFS_MOTION PAUSE=0")
 
+    # Пруток инструмента T(n) (слот по FILE_CONFIG) сейчас в экструдере
+    def _tool_in_head(self, tool):
+        if not self.get_extruder_sensor():
+            return False
+        n_prutok = self.get_current_channel_from_config()
+        if not self.get_port(n_prutok):
+            return False
+        try:
+            with open(FILE_CONFIG, 'r') as f:
+                return json.load(f)[tool] == n_prutok
+        except Exception:
+            return False
+
     # Указать текущий пруток
     def cmd_SET_CURRENT_PRUTOK(self, gcmd):
         if not self.ifs:
@@ -658,6 +671,10 @@ class zmod_ifs:
             if channel != cur_prutok:
                 self.gcode.run_script_from_command("_AFC_IFS_SYNC")
                 self.gcode.run_script_from_command(f"T{channel}")
+                # Ошибку загрузки AFC только сообщает (печать ещё не идёт) - не стартуем не тем прутком
+                if not self._tool_in_head(channel):
+                    raise gcmd.error(f"Не удалось загрузить T{channel}, печать отменена" if self.lang == 'ru'
+                                     else f"Failed to load T{channel}, print not started")
             self.gcode.run_script_from_command(f"SDCARD_SET_CHANNEL CHANNEL={channel}")
         elif channel != cur_prutok:
             self.gcode.run_script_from_command(f"_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=0 RESTORE_TEMP=0")
