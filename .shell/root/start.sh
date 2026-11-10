@@ -153,6 +153,11 @@ prepare_chroot()
             # Полный AFC (afc = 2, без родного экрана): модули AFC, иначе убрать ссылки
             for f in /usr/data/zmod/zmod/AFC/extras/*.py /usr/data/zmod/zmod/.shell/AFC_IFS.py; do
                 l=/usr/data/zmod/klipper/klippy/extras/$(basename $f)
+                if [ "$(basename $f)" = "__init__.py" ]; then
+                    # родной __init__.py klipper, не из AFC (его заменяли раньше)
+                    [ "$(readlink $l)" = "$f" ] && rm -f $l && git -C /usr/data/zmod/klipper checkout -- klippy/extras/__init__.py 2>/dev/null
+                    continue
+                fi
                 if grep -q "^afc = 2" /opt/config/mod_data/variables.cfg && grep -q "^display_off = 1" /opt/config/mod_data/variables.cfg; then
                     check_link $l $f
                 elif [ "$(readlink $l)" = "$f" ]; then

@@ -24,12 +24,29 @@ afc_full_enabled()
     [ ${AD5X} -eq 1 ] && grep -q "^afc = 2" ${MOD_CONF}/mod_data/variables.cfg && grep -q "^display_off = 1" ${MOD_CONF}/mod_data/variables.cfg
 }
 
+# __init__.py из AFC (для его тестов) заменял родной klippy/extras/__init__.py: вернуть родной
+afc_full_init()
+{
+    if [ -L "$1/__init__.py" ] && [ "$(readlink "$1/__init__.py")" = "${AFC_FULL_DIR}/__init__.py" ]; then
+        rm -f "$1/__init__.py"
+        {
+            echo "# Package definition for the extras directory"
+            echo "#"
+            echo "# Copyright (C) 2018  Kevin O'Connor <kevin@koconut.net>"
+            echo "#"
+            echo "# This file may be distributed under the terms of the GNU GPLv3 license."
+        } > "$1/__init__.py"
+    fi
+}
+
 # Ссылки на модули AFC в klippy/extras ($1); при выключенном AFC - удалить
 afc_full_links()
 {
     [ -d "$1" ] || return
+    afc_full_init "$1"
     if afc_full_enabled; then
         for f in ${AFC_FULL_DIR}/*.py; do
+            [ "$(basename $f)" = "__init__.py" ] && continue
             check_link "$1/$(basename $f)" "$f"
         done
         check_link "$1/AFC_IFS.py" /usr/data/zmod/zmod/.shell/AFC_IFS.py
@@ -60,7 +77,7 @@ afc_full_config()
         fi
     else
         if grep -q '^\[include ./mod/afc.cfg\]' ${PRINTER_CFG}; then
-            sed -i '/^\[include \.\/mod\/afc\.cfg\]$/d' ${PRINTER_CFG}
+            sed -i '/^\[include \.\/mod\/afc\.cfg\]/d' ${PRINTER_CFG}
             NEED_REBOOT=1
         fi
         [ -L ${MOD_CONF}/mod/afc.cfg ] && rm -f ${MOD_CONF}/mod/afc.cfg
@@ -618,7 +635,7 @@ unset LD_PRELOAD
         grep -q "M400" ${KLIPPER_DIR}/klippy/extras/filament_switch_sensor.py && sed -i "s/M400//" ${KLIPPER_DIR}/klippy/extras/filament_switch_sensor.py
     fi
     if [ ${AD5X} -eq 1 ]; then
-        grep -q "zmod 1.15" ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py || cp /usr/data/zmod/zmod/.shell/virtual_sdcard.py ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py
+        grep -q "zmod 1.16" ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py || cp /usr/data/zmod/zmod/.shell/virtual_sdcard.py ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_color.py /usr/data/zmod/zmod/.shell/zmod_color.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_afc.py /usr/data/zmod/zmod/.shell/zmod_afc.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_tenz.py /usr/data/zmod/zmod/.shell/zmod_tenz.py

@@ -7,7 +7,6 @@
 import os
 import json
 import queue
-import configparser
 import logging
 import threading
 import requests
@@ -27,17 +26,6 @@ MSG = {
 class _Obj:
     def __init__(self, fn):
         self.get_status = fn
-
-# Переменная мода afc до klippy:ready (save_variables ещё может быть не загружен):
-# 2 - полный AFC (ArmoredTurtle, /usr/data/zmod/zmod/AFC), эмуляция не нужна
-def _afc_mode(config):
-    try:
-        fn = os.path.expanduser(config.getsection('save_variables').get('filename'))
-        cp = configparser.ConfigParser()
-        cp.read(fn)
-        return int(cp.get('Variables', 'afc', fallback='0'))
-    except Exception:
-        return 0
 
 class zmod_afc:
     def __init__(self, config):
@@ -67,7 +55,9 @@ class zmod_afc:
         self.active_spool = None  # spool_id, переданный Moonraker как активный
         self.native_q = None    # очередь /control родного экрана (отдельный поток, по порядку)
         self.pending = {}       # слот -> (HEX, тип, до): записано, но zmod_color ещё не видит
-        self.full = _afc_mode(config) == 2 and config.has_section('AFC')
+        # [AFC] в конфиге - работает полный AFC, даже если afc уже не 2 (сменили в меню, до перезагрузки
+        # fix_config не убрал include): иначе одинаковые команды эмуляции и AFC не дадут Klipper стартовать
+        self.full = config.has_section('AFC')
         if self.full:
             # Панель AFC включена (полным AFC): плагины, которые проверяют zmod_afc.enabled
             # (FF_NFC), отдают катушку командой SET_SPOOL_ID LANE=laneN - она же у полного AFC

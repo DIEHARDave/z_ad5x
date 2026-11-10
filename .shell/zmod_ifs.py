@@ -669,6 +669,11 @@ class zmod_ifs:
         if self._afc_full():
             # Полный AFC (afc = 2): первую загрузку ведёт T(n) AFC (уже загруженная lane - без движений)
             if channel != cur_prutok:
+                afc = self.printer.lookup_object('AFC', None)
+                if afc is not None and not all(getattr(l, '_afc_prep_done', True) for l in afc.lanes.values()):
+                    # PREP идёт ~15 с после старта Klipper; T(n) до него оставил бы AFC в in_toolchange
+                    raise gcmd.error("AFC ещё запускается (PREP), повторите печать через несколько секунд" if self.lang == 'ru'
+                                     else "AFC is still starting (PREP), start the print again in a few seconds")
                 self.gcode.run_script_from_command("_AFC_IFS_SYNC")
                 self.gcode.run_script_from_command(f"T{channel}")
                 # Ошибку загрузки AFC только сообщает (печать ещё не идёт) - не стартуем не тем прутком

@@ -100,7 +100,9 @@ class afcIFS(afcUnit):
         self.sync_map = config.getboolean('sync_map', True)
         self.idle_map = config.getboolean('idle_map', True)   # после печати карта: lane N = T(N-1), как у zmod_afc
         self._printing = False
-        self.afc_runout = config.getboolean('afc_runout', True)
+        # Окончание прутка ловит датчик головы (_AFC_IFS_HEAD_RUNOUT): флаг слота IFS до выгрузки не гаснет.
+        # True - ещё и по флагу слота (тогда возможна двойная обработка)
+        self.afc_runout = config.getboolean('afc_runout', False)
         self.load_cmd = config.get('load_cmd', 'INSERT_PRUTOK_IFS PRUTOK={slot} TRASH=1')
         # Выгрузка из головы: обрезать и вывести пруток из экструдера, он остаётся в трубке
         # готовым к загрузке (как старый пруток при смене), затем разблокировать IFS
@@ -124,7 +126,7 @@ class afcIFS(afcUnit):
         self._await_empty = set() # lane после Eject: ждём, пока слот опустеет
         self.prep_sample = config.getfloat('prep_sample', 8., minval=0.)  # сек опроса слотов на PREP
         self._prep_seen = None    # (до, {слот: был ли пруток}) - выборка PREP
-        self._synced = {}         # слот -> (тип, '#RRGGBB'), на которых сошлись обе стороны
+        self._synced = {}         # слот -> ((тип, цвет) Zmod, (тип, цвет) AFC), на которых сошлись стороны
         self._map_mtime = None
         self._map_agreed = None   # карта FILE_CONFIG, на которой сошлись с AFC
         self._spool_wait = {}
@@ -473,7 +475,8 @@ class afcIFS(afcUnit):
         self.logger.info("Infinite Spool triggered for %s -> %s" % (lane.name, change.name))
         tool = getattr(self.sdcard, 'print_channel', None)
         self._runout_tool = tool if isinstance(tool, int) else self._tool(lane)
-        change.status = AFCLaneState.INFINITE_RUNOUT
+        # Статус запасной lane не INFINITE_RUNOUT: для одного экструдера он меняет у AFC только
+        # force_unload + LANE_UNLOAD (выброс пустого слота, REMOVE_PRUTOK_IFS) - Zmod сам вынет остаток
         try:
             afc.CHANGE_TOOL(change, restore_pos=False)
         finally:
@@ -543,17 +546,19 @@ class afcIFS(afcUnit):
             zm = s.get('Material') or ''
             zmod = ('' if zm in ('', '?') else zm, color_hex(s.get('HEX')))
             afc = (lane.material or '', color_hex(lane.color))
+            # Согласованная пара хранится с обеих сторон: тип AFC не всегда тип Zmod (PLA+ -> PLA),
+            # иначе каждый опрос снова писал бы слот Zmod
             agreed = self._synced.get(slot)
-            if agreed is None or zmod != agreed or afc == ('', ''):
+            if agreed is None or zmod != agreed[0] or afc == ('', ''):
                 # Первый взгляд (Zmod прав), изменили в Zmod (меню цветов, NFC) или AFC стёр lane
                 if afc != zmod:
                     self._apply_zmod(lane, s)
                     changed = True
-                self._synced[slot] = zmod
-            elif afc != agreed:
+                self._synced[slot] = (zmod, (lane.material or '', color_hex(lane.color)))
+            elif afc != agreed[1]:
                 # Изменили в AFC: SET_COLOR, SET_MATERIAL, SET_SPOOL_ID
                 zmat, zhex = self._push_zmod(lane, afc[0], afc[1])
-                self._synced[slot] = (zmat, zhex)
+                self._synced[slot] = ((zmat, zhex), afc)
         if changed:
             self.afc.save_vars()
 
@@ -630,7 +635,8 @@ class afcIFS(afcUnit):
             if s is not None:
                 self._apply_zmod(cur_lane, s)
                 zm = s.get('Material') or ''
-                self._synced[self._slot[cur_lane.name]] = ('' if zm in ('', '?') else zm, color_hex(s.get('HEX')))
+                self._synced[self._slot[cur_lane.name]] = (('' if zm in ('', '?') else zm, color_hex(s.get('HEX'))),
+                                                           (cur_lane.material or '', color_hex(cur_lane.color)))
         self._send_lane_data(cur_lane)     # AFC стёр lane_data в начале PREP
         cur_lane.do_enable(False)
         self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(
