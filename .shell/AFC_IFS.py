@@ -603,7 +603,7 @@ class afcIFS(afcUnit):
             restore = 1 if getattr(self.sdcard, 'change_filament', False) else 0
             ok, err = self._run(self.swap_cmd, cur_lane, tool=tool, restore=restore)
         else:
-            ok, err = self._run(self.load_cmd, cur_lane)
+            ok, err = self._run(self.load_cmd, cur_lane, keep_temp=True)   # и после сбоя - не оставлять сопло горячим
         st = self._status()
         if ok and self._in_head(st) != slot:
             ok, err = False, "Zmod reports slot %s in the toolhead" % (self._in_head(st) or 'none')
