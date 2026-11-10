@@ -173,6 +173,7 @@ class afcIFS(afcUnit):
         self.save_variables = self.printer.lookup_object('save_variables', None)
         if not self.afc_heats:
             self._skip_afc_preheat()
+        self._count_preloaded_tool()
         for lane in self.lanes.values():
             slot = getattr(lane, 'index', 0)
             if not 1 <= slot <= 16:
@@ -197,6 +198,20 @@ class afcIFS(afcUnit):
             return orig(cur_lane, *args, **kwargs)
         afc._check_extruder_temp = check
         afc._ifs_preheat_wrapped = True
+
+    def _count_preloaded_tool(self):
+        # Zmod заправляет первый инструмент до старта печати, а virtual_sdcard пропускает T(n)
+        # уже заправленного - AFC не видит первую T и считает смены с -1 ("Change 0 out of 1")
+        afc = self.afc
+        if getattr(afc, '_ifs_count_wrapped', False):
+            return
+        orig = afc._finish_print_start
+        def finish(*args, **kwargs):
+            orig(*args, **kwargs)
+            if afc.current is not None and afc.current_toolchange == -1:
+                afc.current_toolchange = 0
+        afc._finish_print_start = finish
+        afc._ifs_count_wrapped = True
 
     def handle_ready(self):
         super().handle_ready()
