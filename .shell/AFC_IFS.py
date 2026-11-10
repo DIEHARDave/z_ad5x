@@ -66,6 +66,8 @@ class afcIFS(afcUnit):
         self.afc_heats = config.getboolean('afc_heats', False)          # греют команды Zmod
         self.sync_materials = config.getboolean('sync_materials', True)
         self.sync_map = config.getboolean('sync_map', True)
+        self.idle_map = config.getboolean('idle_map', True)   # после печати карта: lane N = T(N-1), как у zmod_afc
+        self._printing = False
         self.afc_runout = config.getboolean('afc_runout', True)
         self.load_cmd = config.get('load_cmd', 'INSERT_PRUTOK_IFS PRUTOK={slot} TRASH=1')
         # Выгрузка из головы: обрезать и вывести пруток из экструдера, он остаётся в трубке
@@ -270,6 +272,10 @@ class afcIFS(afcUnit):
                 self.logger.error("AFC_IFS: %s sensor change failed\n%s" % (lane.name, traceback.format_exc()))
 
         self._sync_tool(self._in_head(st))
+        printing = self.printer.lookup_object('print_stats').get_status(eventtime)['state'] in ('printing', 'paused')
+        if self.idle_map and self._printing and not printing:
+            self._reset_map()
+        self._printing = printing
         if self.sync_map:
             self._sync_map()
         if self.sync_materials:
@@ -344,6 +350,15 @@ class afcIFS(afcUnit):
                 atomic_write(FILE_CONFIG, json.dumps(new, indent=2))
                 self._map_mtime, _ = self._read_map()
                 self._map_agreed = new
+
+    def _reset_map(self):
+        # Карта печати (диалог цветов) после печати не нужна: T(n) снова на слоте n+1
+        n = len(self._slot)
+        _, fmap = self._read_map()
+        new = [(t % n) + 1 for t in range(max(n, len(fmap or [])))]
+        if fmap != new:
+            self.logger.info("AFC_IFS: print ended, tool map back to %s" % new)
+            atomic_write(FILE_CONFIG, json.dumps(new, indent=2))
 
     def _apply_file_map(self, fmap, run):
         if not getattr(self.afc, 'enable_multiple_mapping', False):
