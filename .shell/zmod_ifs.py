@@ -689,9 +689,10 @@ class zmod_ifs:
             self.gcode.run_script_from_command("_IFS_OFF")
             return
         if self._afc_full():
-            # Полный AFC: замену при окончании прутка ведёт AFC (датчик слота, SET_RUNOUT);
-            # датчик головы уже поставил паузу - печать ждёт
+            # Полный AFC: флаг слота IFS не гаснет до выгрузки, конец прутка виден только здесь.
+            # Пауза уже стоит; AFC_IFS - бесконечная катушка (SET_RUNOUT) или пауза с сообщением AFC
             self.gcode.run_script_from_command("_PRINT_HEAD INFO=0")
+            self.gcode.run_script_from_command("_AFC_IFS_HEAD_RUNOUT")
             return
 
         prutok = 1

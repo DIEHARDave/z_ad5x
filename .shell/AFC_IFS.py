@@ -136,6 +136,9 @@ class afcIFS(afcUnit):
         self.printer.register_event_handler('afc_stepper:register_macros', self._drop_runout_macro)
         self.gcode.register_command('_AFC_IFS_SYNC', self.cmd_AFC_IFS_SYNC,
                                     desc='AFC_IFS: carry the Zmod tool map (FILE_CONFIG) into AFC now')
+        self.gcode.register_command('_AFC_IFS_HEAD_RUNOUT', self.cmd_AFC_IFS_HEAD_RUNOUT,
+                                    desc='AFC_IFS: filament ran out at the head sensor - AFC runout for the lane in the toolhead')
+        self._runout_tool = None  # T(n) печати на время замены бесконечной катушкой
         self._prepare_varfile(config)
 
     def _prepare_varfile(self, config):
@@ -435,6 +438,56 @@ class afcIFS(afcUnit):
         if self._prepped() and self.sync_map:
             self._sync_map(self.gcode.run_script_from_command)
 
+    def cmd_AFC_IFS_HEAD_RUNOUT(self, gcmd):
+        """Пруток кончился у датчика головы (ANALOG_PRUTOK, печать уже на паузе Zmod).
+
+        Флаг слота IFS не гаснет, пока слот не выгружен, - конец прутка AFC видит только здесь.
+        Пауза и парковка уже от PAUSE Zmod, поэтому не _perform_infinite_runout AFC
+        (его send_resume_command продолжил бы печать с места парковки): смена через AFC,
+        дальше RESUME Zmod возвращает позицию и температуру.
+        """
+        afc = self.afc
+        lane = afc.lanes.get(afc.current) if afc.current else None
+        if lane is None or lane.unit_obj is not self:
+            gcmd.respond_info("AFC_IFS: head runout, no IFS lane in the toolhead")
+            return
+        change = afc.lanes.get(lane.runout_lane) if lane.runout_lane else None
+        ready = (change is not None and change is not lane and change.prep_state
+                 and change.status == AFCLaneState.LOADED)
+        lane.status = AFCLaneState.NONE
+        if not ready:
+            lane.unit_obj.lane_not_ready(lane)
+            why = "runout lane is not set" if change is None else "runout lane %s is not ready" % change.name
+            afc.error.AFC_error("Runout triggered for lane %s and %s. Load the next spool into the"
+                                " toolhead, then hit resume to continue." % (lane.name, why), pause=False)
+            return
+        self.logger.info("Infinite Spool triggered for %s -> %s" % (lane.name, change.name))
+        tool = getattr(self.sdcard, 'print_channel', None)
+        self._runout_tool = tool if isinstance(tool, int) else self._tool(lane)
+        change.status = AFCLaneState.INFINITE_RUNOUT
+        try:
+            afc.CHANGE_TOOL(change, restore_pos=False)
+        finally:
+            self._runout_tool = None
+        if afc.error_state:
+            return
+        # Инструменты пустой lane - на запасную, как ANALOG_PRUTOK Zmod (не AFC_SWAP_MAPPING:
+        # тот отдал бы пустой lane инструменты запасной); карта Zmod - так же
+        tools = [str(m) for m in (lane.map or []) if str(m)[1:].isdigit()]
+        for tcmd in tools:
+            self.gcode.run_script_from_command("SET_MAP LANE=%s MAP=%s" % (change.name, tcmd))
+        _, fmap = self._read_map()
+        if fmap:
+            slot = self._slot[change.name]
+            moved = [int(t[1:]) for t in tools]
+            new = [slot if t in moved else s for t, s in enumerate(fmap)]
+            if new != fmap:
+                atomic_write(FILE_CONFIG, json.dumps(new, indent=2))
+        self._map_mtime, self._map_agreed = self._read_map()
+        self.logger.info("AFC_IFS: %s now on %s" % (', '.join(tools) or 'T%s' % tool, change.name))
+        lane.unit_obj.lane_not_ready(lane)
+        self.gcode.run_script_from_command("RESUME")
+
     # -- тип и цвет: lane AFC <-> слот Zmod -------------------------------------
 
     def _zmod_type(self, mat):
@@ -596,6 +649,8 @@ class afcIFS(afcUnit):
     # -- движения (всё командами Zmod) -------------------------------------------
 
     def _tool(self, lane):
+        if self._runout_tool is not None:
+            return self._runout_tool
         cm = str(getattr(lane, 'current_map', '') or '')
         if cm[1:].isdigit():
             return int(cm[1:])
