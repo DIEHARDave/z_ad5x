@@ -317,7 +317,7 @@ class VirtualSD:
                             # Пауза пришла во время M400: строку T не съедаем, смена будет после RESUME
                             break
                         self.change_filament = True
-                        # zmod 1.14
+                        # zmod 1.15
                         try:
                             if getattr(self.printer.lookup_object('zmod_afc', None), 'full', False):
                                 # Полный AFC (afc = 2): смену ведёт T(n) AFC, синхронно; юнит AFC_IFS вызывает _A_CHANGE_FILAMENT
