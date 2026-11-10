@@ -68,7 +68,11 @@ class afcIFS(afcUnit):
         self.sync_map = config.getboolean('sync_map', True)
         self.afc_runout = config.getboolean('afc_runout', True)
         self.load_cmd = config.get('load_cmd', 'INSERT_PRUTOK_IFS PRUTOK={slot} TRASH=1')
-        self.unload_cmd = config.get('unload_cmd', 'REMOVE_PRUTOK_IFS PRUTOK={slot}')
+        # Выгрузка из головы: обрезать и вывести пруток из экструдера, он остаётся в трубке
+        # готовым к загрузке (как старый пруток при смене)
+        self.unload_cmd = config.get('unload_cmd', 'IFS_REMOVE_CURRENT_PRUTOK')
+        # Eject: полная выгрузка - пруток уходит из трубки к слоту, катушку можно снять
+        self.eject_cmd = config.get('eject_cmd', 'REMOVE_PRUTOK_IFS PRUTOK={slot}')
         self.swap_cmd = config.get('swap_cmd',
             '_A_CHANGE_FILAMENT CHANNEL={tool} RESTORE_POSITION={restore} RESTORE_TEMP={restore}')
 
@@ -537,16 +541,21 @@ class afcIFS(afcUnit):
                 return int(str(m)[1:])
         return self._slot[lane.name] - 1
 
-    def _run(self, template, lane, **kw):
+    def _run(self, template, lane, keep_temp=False, **kw):
         cmd = template.format(slot=self._slot[lane.name], lane=lane.name, **kw)
         self.logger.debug("AFC_IFS: " + cmd)
         self._busy = True
+        # Вне печати команды Zmod греют под материал и оставляют сопло горячим: вернуть как было
+        heater = self.printer.lookup_object('extruder').get_heater() if keep_temp else None
+        target = heater.target_temp if heater is not None else None
         try:
             self.gcode.run_script_from_command(cmd)
             return True, ''
         except Exception as e:
             return False, str(e)
         finally:
+            if target is not None and not self.afc.function.in_print():
+                self.gcode.run_script_from_command("M104 S%d" % int(target))
             self._busy = False
             self._pending.clear()
             self._head = None
@@ -601,7 +610,7 @@ class afcIFS(afcUnit):
             self._swap_from = cur_lane.name
         else:
             self._swap_from = None
-            ok, err = self._run(self.unload_cmd, cur_lane)
+            ok, err = self._unload(cur_lane)
             st = self._status()
             if ok and self._in_head(st) == self._slot[cur_lane.name]:
                 ok, err = False, "the lane is still in the toolhead"
@@ -620,14 +629,16 @@ class afcIFS(afcUnit):
 
     def eject_lane(self, lane):
         self._await_empty.add(lane.name)
-        # Пруток не в голове уже стоит в IFS: вынуть катушку рукой
-        if self._in_head(self._status()) == self._slot[lane.name]:
-            ok, err = self._run(self.unload_cmd, lane)
-            if not ok:
-                self.afc.error.AFC_error("IFS unload of %s failed: %s" % (lane.name, err), pause=False)
-                return
+        # Из головы или из трубки - пруток уходит к слоту IFS, дальше катушку снимают рукой
+        ok, err = self._run(self.eject_cmd, lane, keep_temp=True)
+        if not ok:
+            self.afc.error.AFC_error("IFS eject of %s failed: %s" % (lane.name, err), pause=False)
+            return
         self.gcode.respond_info("AFC_IFS: %s - pull the filament out of IFS slot %d"
                                 % (lane.name, self._slot[lane.name]))
+
+    def _unload(self, lane):
+        return self._run(self.unload_cmd, lane, keep_temp=True)
 
     def lane_unload(self, cur_lane):
         self.eject_lane(cur_lane)
