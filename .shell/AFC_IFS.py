@@ -387,6 +387,11 @@ class afcIFS(afcUnit):
         return out
 
     def _sync_map(self, run=None):
+        if run is None and self.gcode.get_mutex().test():
+            # G-code занят (старт печати): run_script из таймера встал бы в очередь за ним,
+            # а _AFC_IFS_SYNC перед T(n) принял бы старую карту AFC за новую и затер файл.
+            # Карту сведёт _AFC_IFS_SYNC (в потоке G-code) или следующий опрос
+            return
         mtime, fmap = self._read_map()
         if fmap is None:
             return
