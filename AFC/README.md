@@ -10,6 +10,8 @@ emulation `zmod_afc` serves the AFC panel as before.
 
 Update: `./AFC/sync_afc.sh <AFC-Klipper-Add-On clone> [commit]`
 
+Testers: install, update and rollback steps are in [TESTING.md](TESTING.md).
+
 ---
 
 Копия `extras/` из AFC-Klipper-Add-On на коммите из `AFC_COMMIT`, без изменений,
