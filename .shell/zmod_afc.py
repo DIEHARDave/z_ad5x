@@ -1,5 +1,5 @@
 # (C) 2024-2026 ghzserg https://github.com/ghzserg/zmod
-# Эмуляция AFC (ArmoredTurtle/AFC-Klipper-Add-On) поверх zmod_color:
+# Эмуляция AFC (AFCProject/AFC-Klipper-Add-On) поверх zmod_color:
 # панель AFC и диалог выбора lane перед печатью во Fluidd/Mainsail.
 # Статус - только zmod_color.get_status() (slots, active_tool_id), карта T->слот - FILE_CONFIG.
 # Общий для AD5X и C5Pro; команды загрузки/выгрузки задаются в [zmod_afc].

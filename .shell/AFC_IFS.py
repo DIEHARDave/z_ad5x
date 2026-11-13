@@ -1,5 +1,5 @@
 # (C) 2024-2026 ghzserg https://github.com/ghzserg/zmod
-# Юнит AFC (ArmoredTurtle AFC-Klipper-Add-On, копия в /usr/data/zmod/zmod/AFC) для IFS AD5X.
+# Юнит AFC (AFCProject AFC-Klipper-Add-On, копия в /usr/data/zmod/zmod/AFC) для IFS AD5X.
 # Работает при afc = 2 без родного экрана (fix_config.sh ссылает модули AFC в klippy/extras).
 #
 # IFS ведёт zmod_ifs/zmod_color: юнит отдаёт загрузку, выгрузку и смену прутка их командам

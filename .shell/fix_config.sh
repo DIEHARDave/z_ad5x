@@ -16,7 +16,7 @@ check_link()
     fi
 }
 
-# Полный AFC (ArmoredTurtle AFC-Klipper-Add-On, копия в /usr/data/zmod/zmod/AFC) вместо
+# Полный AFC (AFCProject AFC-Klipper-Add-On, копия в /usr/data/zmod/zmod/AFC) вместо
 # встроенной эмуляции zmod_afc: afc = 2, только AD5X без родного экрана (печать ведёт Klipper)
 AFC_FULL_DIR=/usr/data/zmod/zmod/AFC/extras
 afc_full_enabled()

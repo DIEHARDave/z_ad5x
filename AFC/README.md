@@ -1,6 +1,6 @@
 # AFC-Klipper-Add-On (vendored)
 
-Copy of `extras/` from [ArmoredTurtle/AFC-Klipper-Add-On](https://github.com/ArmoredTurtle/AFC-Klipper-Add-On)
+Copy of `extras/` from [AFCProject/AFC-Klipper-Add-On](https://github.com/AFCProject/AFC-Klipper-Add-On)
 at the commit in `AFC_COMMIT`, unchanged. License: GPLv3 (`LICENSE`).
 
 Used when the mod variable `afc = 2` on an AD5X without the stock screen
