@@ -1,5 +1,5 @@
 # (C) 2024-2026 ghzserg https://github.com/ghzserg/zmod
-# Эмуляция AFC (ArmoredTurtle/AFC-Klipper-Add-On) поверх zmod_color:
+# Эмуляция AFC (AFCProject/AFC-Klipper-Add-On) поверх zmod_color:
 # панель AFC и диалог выбора lane перед печатью во Fluidd/Mainsail.
 # Статус - только zmod_color.get_status() (slots, active_tool_id), карта T->слот - FILE_CONFIG.
 # Общий для AD5X и C5Pro; команды загрузки/выгрузки задаются в [zmod_afc].
@@ -55,6 +55,14 @@ class zmod_afc:
         self.active_spool = None  # spool_id, переданный Moonraker как активный
         self.native_q = None    # очередь /control родного экрана (отдельный поток, по порядку)
         self.pending = {}       # слот -> (HEX, тип, до): записано, но zmod_color ещё не видит
+        # [AFC] в конфиге - работает полный AFC, даже если afc уже не 2 (сменили в меню, до перезагрузки
+        # fix_config не убрал include): иначе одинаковые команды эмуляции и AFC не дадут Klipper стартовать
+        self.full = config.has_section('AFC')
+        if self.full:
+            # Панель AFC включена (полным AFC): плагины, которые проверяют zmod_afc.enabled
+            # (FF_NFC), отдают катушку командой SET_SPOOL_ID LANE=laneN - она же у полного AFC
+            self.enabled = True
+            return              # команды, объекты и lane_data - у полного AFC
         for cmd in ('SET_COLOR', 'SET_MATERIAL', 'SET_MAP', 'SET_WEIGHT', 'CHANGE_TOOL', 'TOOL_UNLOAD', 'LANE_UNLOAD'):
             self.gcode.register_command(cmd, getattr(self, 'cmd_' + cmd))
         for cmd in ('AFC_RESET', 'RESET_FAILURE', 'AFC_CLEAR_MESSAGE'):
@@ -65,7 +73,7 @@ class zmod_afc:
     def _ready(self):
         self.color = self.printer.lookup_object('zmod_color')
         self.save_variables = self.printer.lookup_object('save_variables', None)
-        self.enabled = self.save_variables is not None and self.save_variables.allVariables.get('afc', 0) == 1
+        self.enabled = self.save_variables is not None and self.save_variables.allVariables.get('afc', 0) in (1, 2)  # 2 без [AFC] (C5Pro, родной экран) - эмуляция
         if not self.enabled:
             return
         self.reactor = self.printer.get_reactor()

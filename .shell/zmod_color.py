@@ -907,6 +907,8 @@ class zmod_color:
         save_variables = {} if save_variables == None else save_variables.allVariables
         if not self.orca_lanes or save_variables.get('helix', 0) == 1:
             return
+        if getattr(self.printer.lookup_object('zmod_afc', None), 'full', False):
+            return      # lane_data пишет полный AFC
         spools = {k: save_variables.get(f'afc_spool_lane{k}') or None for k in slots}
 
         def worker():

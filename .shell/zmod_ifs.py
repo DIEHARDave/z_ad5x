@@ -405,6 +405,9 @@ class zmod_ifs:
         finally:
             self._recovering = False
 
+    def _afc_full(self):
+        return getattr(self.printer.lookup_object('zmod_afc', None), 'full', False)
+
     def print_str(self, string, info=True):
         if info:
             self.gcode.respond_info(string)
@@ -631,6 +634,19 @@ class zmod_ifs:
             # Закончился
             self.gcode.run_script_from_command("_PRINT_IFS_MOTION PAUSE=0")
 
+    # Пруток инструмента T(n) (слот по FILE_CONFIG) сейчас в экструдере
+    def _tool_in_head(self, tool):
+        if not self.get_extruder_sensor():
+            return False
+        n_prutok = self.get_current_channel_from_config()
+        if not self.get_port(n_prutok):
+            return False
+        try:
+            with open(FILE_CONFIG, 'r') as f:
+                return json.load(f)[tool] == n_prutok
+        except Exception:
+            return False
+
     # Указать текущий пруток
     def cmd_SET_CURRENT_PRUTOK(self, gcmd):
         if not self.ifs:
@@ -650,7 +666,22 @@ class zmod_ifs:
                     cur_prutok = 98
 
         channel = gcmd.get_int('CHANNEL', cur_prutok)
-        if channel != cur_prutok:
+        if self._afc_full():
+            # Полный AFC (afc = 2): первую загрузку ведёт T(n) AFC (уже загруженная lane - без движений)
+            if channel != cur_prutok:
+                afc = self.printer.lookup_object('AFC', None)
+                if afc is not None and not all(getattr(l, '_afc_prep_done', True) for l in afc.lanes.values()):
+                    # PREP идёт ~15 с после старта Klipper; T(n) до него оставил бы AFC в in_toolchange
+                    raise gcmd.error("AFC ещё запускается (PREP), повторите печать через несколько секунд" if self.lang == 'ru'
+                                     else "AFC is still starting (PREP), start the print again in a few seconds")
+                self.gcode.run_script_from_command("_AFC_IFS_SYNC")
+                self.gcode.run_script_from_command(f"T{channel}")
+                # Ошибку загрузки AFC только сообщает (печать ещё не идёт) - не стартуем не тем прутком
+                if not self._tool_in_head(channel):
+                    raise gcmd.error(f"Не удалось загрузить T{channel}, печать отменена" if self.lang == 'ru'
+                                     else f"Failed to load T{channel}, print not started")
+            self.gcode.run_script_from_command(f"SDCARD_SET_CHANNEL CHANNEL={channel}")
+        elif channel != cur_prutok:
             self.gcode.run_script_from_command(f"_A_CHANGE_FILAMENT CHANNEL={channel} RESTORE_POSITION=0 RESTORE_TEMP=0")
         else:
             self.print_str(f"Указываю активный пруток T{cur_prutok}" if self.lang == 'ru' else f"Setting active filament T{cur_prutok}")
@@ -661,6 +692,12 @@ class zmod_ifs:
     def cmd_ANALOG_PRUTOK(self, gcmd):
         if not self.ifs:
             self.gcode.run_script_from_command("_IFS_OFF")
+            return
+        if self._afc_full():
+            # Полный AFC: флаг слота IFS не гаснет до выгрузки, конец прутка виден только здесь.
+            # Пауза уже стоит; AFC_IFS - бесконечная катушка (SET_RUNOUT) или пауза с сообщением AFC
+            self.gcode.run_script_from_command("_PRINT_HEAD INFO=0")
+            self.gcode.run_script_from_command("_AFC_IFS_HEAD_RUNOUT")
             return
 
         prutok = 1

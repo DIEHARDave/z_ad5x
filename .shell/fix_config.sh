@@ -16,6 +16,74 @@ check_link()
     fi
 }
 
+# Полный AFC (AFCProject AFC-Klipper-Add-On, копия в /usr/data/zmod/zmod/AFC) вместо
+# встроенной эмуляции zmod_afc: afc = 2, только AD5X без родного экрана (печать ведёт Klipper)
+AFC_FULL_DIR=/usr/data/zmod/zmod/AFC/extras
+afc_full_enabled()
+{
+    [ ${AD5X} -eq 1 ] && grep -q "^afc = 2" ${MOD_CONF}/mod_data/variables.cfg && grep -q "^display_off = 1" ${MOD_CONF}/mod_data/variables.cfg
+}
+
+# __init__.py из AFC (для его тестов) заменял родной klippy/extras/__init__.py: вернуть родной
+afc_full_init()
+{
+    if [ -L "$1/__init__.py" ] && [ "$(readlink "$1/__init__.py")" = "${AFC_FULL_DIR}/__init__.py" ]; then
+        rm -f "$1/__init__.py"
+        {
+            echo "# Package definition for the extras directory"
+            echo "#"
+            echo "# Copyright (C) 2018  Kevin O'Connor <kevin@koconut.net>"
+            echo "#"
+            echo "# This file may be distributed under the terms of the GNU GPLv3 license."
+        } > "$1/__init__.py"
+    fi
+}
+
+# Ссылки на модули AFC в klippy/extras ($1); при выключенном AFC - удалить
+afc_full_links()
+{
+    [ -d "$1" ] || return
+    afc_full_init "$1"
+    if afc_full_enabled; then
+        for f in ${AFC_FULL_DIR}/*.py; do
+            [ "$(basename $f)" = "__init__.py" ] && continue
+            check_link "$1/$(basename $f)" "$f"
+        done
+        check_link "$1/AFC_IFS.py" /usr/data/zmod/zmod/.shell/AFC_IFS.py
+    else
+        afc_full_unlink "$1"
+    fi
+}
+
+afc_full_unlink()
+{
+    for f in "$1"/*.py; do
+        [ -L "$f" ] && case "$(readlink "$f")" in ${AFC_FULL_DIR}/*|/usr/data/zmod/zmod/.shell/AFC_IFS.py) rm -f "$f" ;; esac
+    done
+}
+
+# Конфиг AFC (AFC/ad5x_afc.cfg -> mod/afc.cfg) перед mod_data/user.cfg, чтобы user.cfg мог его менять
+afc_full_config()
+{
+    if afc_full_enabled; then
+        check_link ${MOD_CONF}/mod/afc.cfg /usr/data/zmod/zmod/AFC/ad5x_afc.cfg
+        if ! grep -q '^\[include ./mod/afc.cfg\]' ${PRINTER_CFG}; then
+            if grep -q '^\[include ./mod_data/user.cfg\]' ${PRINTER_CFG}; then
+                sed -i '/^\[include \.\/mod_data\/user\.cfg\]/i [include ./mod/afc.cfg]' ${PRINTER_CFG}
+            else
+                echo "[include ./mod/afc.cfg]" >> ${PRINTER_CFG}
+            fi
+            NEED_REBOOT=1
+        fi
+    else
+        if grep -q '^\[include ./mod/afc.cfg\]' ${PRINTER_CFG}; then
+            sed -i '/^\[include \.\/mod\/afc\.cfg\]/d' ${PRINTER_CFG}
+            NEED_REBOOT=1
+        fi
+        [ -L ${MOD_CONF}/mod/afc.cfg ] && rm -f ${MOD_CONF}/mod/afc.cfg
+    fi
+}
+
 enable_zmod_ad5m()
 {
     check_link /bin/dropbearkey /usr/data/zmod/zmod/.shell/eabi/dropbear
@@ -91,6 +159,7 @@ restore_base()
     grep -q '^\[include ./mod/mod.cfg' ${MOD_CONF}/printer.cfg && sed -i '/mod.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod/klipper11.cfg' ${MOD_CONF}/printer.cfg && sed -i '/klipper11.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod/klipper13.cfg' ${MOD_CONF}/printer.cfg && sed -i '/klipper13.cfg/d' ${MOD_CONF}/printer.cfg
+    grep -q '^\[include ./mod/afc.cfg' ${MOD_CONF}/printer.cfg && sed -i '/mod\/afc.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod_data/plugins.cfg' ${MOD_CONF}/printer.cfg && sed -i '/plugins.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod_data/user.cfg' ${MOD_CONF}/printer.cfg && sed -i '/user.cfg/d' ${MOD_CONF}/printer.cfg
     grep -q '^\[include ./mod/switch_sensor.cfg' ${MOD_CONF}/printer.cfg && sed -i '/switch_sensor.cfg/d' ${MOD_CONF}/printer.cfg
@@ -146,6 +215,7 @@ restore_base()
         rm -f ${KLIPPER_DIR}/klippy/extras/zmod_ifs.py
         rm -f ${KLIPPER_DIR}/klippy/extras/zmod_ifs_switch_sensor.py
         rm -f ${KLIPPER_DIR}/klippy/extras/zmod_ifs_motion_sensor.py
+        afc_full_unlink ${KLIPPER_DIR}/klippy/extras
     fi
     grep -q _output_callback_gcode ${KLIPPER_DIR}/klippy/webhooks.py && cp /usr/data/zmod/zmod/.shell/webhooks.py.orig ${KLIPPER_DIR}/klippy/webhooks.py
     grep -q ZLOAD_VARIABLE ${KLIPPER_DIR}/klippy/extras/save_variables.py && cp /usr/data/zmod/zmod/.shell/save_variables.py.orig ${KLIPPER_DIR}/klippy/extras/save_variables.py
@@ -565,7 +635,7 @@ unset LD_PRELOAD
         grep -q "M400" ${KLIPPER_DIR}/klippy/extras/filament_switch_sensor.py && sed -i "s/M400//" ${KLIPPER_DIR}/klippy/extras/filament_switch_sensor.py
     fi
     if [ ${AD5X} -eq 1 ]; then
-        grep -q "zmod 1.13" ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py || cp /usr/data/zmod/zmod/.shell/virtual_sdcard.py ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py
+        grep -q "zmod 1.16" ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py || cp /usr/data/zmod/zmod/.shell/virtual_sdcard.py ${KLIPPER_DIR}/klippy/extras/virtual_sdcard.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_color.py /usr/data/zmod/zmod/.shell/zmod_color.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_afc.py /usr/data/zmod/zmod/.shell/zmod_afc.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_tenz.py /usr/data/zmod/zmod/.shell/zmod_tenz.py
@@ -573,6 +643,8 @@ unset LD_PRELOAD
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_ifs_switch_sensor.py /usr/data/zmod/zmod/.shell/zmod_ifs_switch_sensor.py
         check_link ${KLIPPER_DIR}/klippy/extras/zmod_ifs_motion_sensor.py /usr/data/zmod/zmod/.shell/zmod_ifs_motion_sensor.py
         check_link /opt/config/rw /usr/prog/config/
+        afc_full_links ${KLIPPER_DIR}/klippy/extras
+        afc_full_config
     fi
 
     check_link ${KLIPPER_DIR}/klippy/extras/zmod.py /usr/data/zmod/zmod/.shell/zmod.py
