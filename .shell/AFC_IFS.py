@@ -558,7 +558,12 @@ class afcIFS(afcUnit):
                 # Пустой слот: катушку назначают до вставки (NFC -> SET_SPOOL_ID), её цвет идёт в Zmod.
                 # Пара сохраняется, чтобы вставка не вернула в AFC старый цвет слота Zmod
                 if agreed is None:
-                    self._synced[slot] = (zmod, afc)
+                    if afc != ('', '') and afc != zmod:
+                        # Катушку назначили до перезагрузки: AFC помнит её, Zmod - нет
+                        zmat, zhex = self._push_zmod(lane, afc[0], afc[1])
+                        self._synced[slot] = ((zmat, zhex), afc)
+                    else:
+                        self._synced[slot] = (zmod, afc)
                 elif zmod != agreed[0]:
                     # Меню цветов Zmod для пустого слота
                     if afc != zmod and zmod != ('', ''):
