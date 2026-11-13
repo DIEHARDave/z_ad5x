@@ -545,7 +545,7 @@ class afcIFS(afcUnit):
         for lane in self.lanes.values():
             slot = self._slot[lane.name]
             s = slots.get(slot)
-            if s is None or not lane.prep_state:
+            if s is None:
                 self._synced.pop(slot, None)
                 continue
             zm = s.get('Material') or ''
@@ -554,6 +554,25 @@ class afcIFS(afcUnit):
             # Согласованная пара хранится с обеих сторон: тип AFC не всегда тип Zmod (PLA+ -> PLA),
             # иначе каждый опрос снова писал бы слот Zmod
             agreed = self._synced.get(slot)
+            if not lane.prep_state:
+                # Пустой слот: катушку назначают до вставки (NFC -> SET_SPOOL_ID), её цвет идёт в Zmod.
+                # Пара сохраняется, чтобы вставка не вернула в AFC старый цвет слота Zmod
+                if agreed is None:
+                    self._synced[slot] = (zmod, afc)
+                elif zmod != agreed[0]:
+                    # Меню цветов Zmod для пустого слота
+                    if afc != zmod and zmod != ('', ''):
+                        self._apply_zmod(lane, s)
+                        changed = True
+                    self._synced[slot] = (zmod, (lane.material or '', color_hex(lane.color)))
+                elif afc != agreed[1]:
+                    if afc == ('', ''):
+                        # AFC стёр катушку после окончания прутка: слот Zmod не трогаем
+                        self._synced[slot] = (agreed[0], afc)
+                    else:
+                        zmat, zhex = self._push_zmod(lane, afc[0], afc[1])
+                        self._synced[slot] = ((zmat, zhex), afc)
+                continue
             if agreed is None or zmod != agreed[0] or afc == ('', ''):
                 # Первый взгляд (Zmod прав), изменили в Zmod (меню цветов, NFC) или AFC стёр lane
                 if afc != zmod:
