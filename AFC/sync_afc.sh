@@ -4,7 +4,7 @@ set -e
 SRC=$1
 REV=${2:-HEAD}
 DST=$(cd "$(dirname "$0")" && pwd)
-[ -d "$SRC/.git" ] || { echo "usage: $0 <AFC-Klipper-Add-On clone> [commit]"; exit 1; }
+[ -e "$SRC/.git" ] || { echo "usage: $0 <AFC-Klipper-Add-On clone> [commit]"; exit 1; }
 COMMIT=$(git -C "$SRC" rev-parse "$REV")
 rm -rf "$DST/extras"
 git -C "$SRC" -c core.autocrlf=false archive "$COMMIT" extras LICENSE | tar xf - -C "$DST"

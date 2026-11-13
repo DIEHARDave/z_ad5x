@@ -10,6 +10,11 @@ emulation `zmod_afc` serves the AFC panel as before.
 
 Update: `./AFC/sync_afc.sh <AFC-Klipper-Add-On clone> [commit]`
 
+The IFS unit, `.shell/AFC_IFS.py`, is the shared AFC unit for Zmod and Kiln OS
+(Zmod and Kiln backends, `firmware: auto`), proposed for AFC itself. Until AFC
+ships it, Zmod carries a copy; keep it identical to the AFC branch's
+`extras/AFC_IFS.py`.
+
 Testers: install, update and rollback steps are in [TESTING.md](TESTING.md).
 
 ---
