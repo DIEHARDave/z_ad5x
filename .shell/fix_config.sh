@@ -62,9 +62,46 @@ afc_full_unlink()
     done
 }
 
+# IFS Jacker: lane5-laneN для AFC (mod/afc_lanes.cfg, его подключает ad5x_afc.cfg).
+# N - afc_lanes в variables.cfg: число каналов, которое AFC_IFS сохраняет из channel_count
+# Jacker. Там же color_limit для zmod_ifs: слоты 5-N видны уже при PREP, не через 30 с
+# после старта, когда плагин ifs_jacker находит Jacker
+afc_full_lanes()
+{
+    lanes_cfg=${MOD_CONF}/mod/afc_lanes.cfg
+    n=$(sed -n 's/^afc_lanes = \([0-9][0-9]*\)$/\1/p' ${MOD_CONF}/mod_data/variables.cfg)
+    [ -n "$n" ] || n=4
+    [ $n -gt 16 ] && n=16
+    if afc_full_enabled && [ $n -gt 4 ] && grep -q '^\[include plugins/ifs_jacker/' ${MOD_CONF}/mod_data/plugins.cfg 2>/dev/null; then
+        {
+            echo "# fix_config.sh: IFS Jacker, слоты 5-$n (afc_lanes = $n в variables.cfg). Не редактировать"
+            echo "[zmod_ifs]"
+            echo "color_limit: $n"
+            i=5
+            while [ $i -le $n ]; do
+                echo
+                echo "[AFC_lane lane$i]"
+                echo "unit: IFS:$i"
+                echo "map: T$((i - 1))"
+                i=$((i + 1))
+            done
+        } > ${lanes_cfg}.tmp
+        if cmp -s ${lanes_cfg}.tmp ${lanes_cfg}; then
+            rm -f ${lanes_cfg}.tmp
+        else
+            mv ${lanes_cfg}.tmp ${lanes_cfg}
+            NEED_REBOOT=1
+        fi
+    elif [ -f ${lanes_cfg} ]; then
+        rm -f ${lanes_cfg}
+        NEED_REBOOT=1
+    fi
+}
+
 # Конфиг AFC (AFC/ad5x_afc.cfg -> mod/afc.cfg) перед mod_data/user.cfg, чтобы user.cfg мог его менять
 afc_full_config()
 {
+    afc_full_lanes
     if afc_full_enabled; then
         check_link ${MOD_CONF}/mod/afc.cfg /usr/data/zmod/zmod/AFC/ad5x_afc.cfg
         if ! grep -q '^\[include ./mod/afc.cfg\]' ${PRINTER_CFG}; then

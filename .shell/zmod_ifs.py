@@ -866,9 +866,12 @@ class zmod_ifs:
             else:
                 self.print_str("Unknown return code", info)
 
+    # Из колбэка reactor (поток датчика): run_script берёт мьютекс G-code, иначе
+    # автовставка (_IFS_AUTOINSERT) шла бы одновременно с загрузкой/выгрузкой/сменой
+    # и обе делили бы один слот команды IFS (Timeout waiting for response)
     def _safe_run_script(self, script):
         try:
-            self.gcode.run_script_from_command(script)
+            self.gcode.run_script(script)
         except self.gcode.error as e:
             #self.info(f"Ошибка в асинхронном вызове {script}: {e}")
             pass

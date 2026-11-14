@@ -77,6 +77,21 @@ chroot /usr/data/.mod/.zmod sh -c "cd /usr/data/zmod/zmod && \
 Reboot. If you turned off `zmod_afcplus`, turn it back on with
 `ENABLE_PLUGIN NAME=zmod_afcplus`.
 
+## IFS Jacker (more than 4 slots)
+
+With ninjamida's `ifs_jacker` plugin enabled, full AFC gets a lane for every
+Jacker slot (8, 12 or 16):
+
+1. Turn on full AFC as above and start the printer with the Jacker connected.
+2. After about 30 s, AFC.log says `the IFS has 8 slots, AFC has no lane for
+   slot 5, 6, 7, 8. Reboot the printer`. Reboot once.
+3. After that reboot, the AFC panel shows `lane5`–`lane8` (T4–T7), and Zmod sees
+   all slots from the start, so spools on lanes 5–8 survive later reboots.
+
+Reboot once more after changing how many IFS units hang on the Jacker. This is
+tested in an emulator with 2 IFS units, not on a real Jacker yet. Reports from
+Jacker owners are very welcome.
+
 ## What to test and report
 
 - Idle load and unload from the AFC panel, `T0`–`T3`, and lane mapping (`SET_MAP`).
